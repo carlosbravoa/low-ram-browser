@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Measures cro-minimum on a real device (a 1 GB Raspberry Pi, a 2 GB laptop)
+# Measures low-ram-browser on a real device (a 1 GB Raspberry Pi, a 2 GB laptop)
 # and writes one report file to send back. Needs the device's desktop (run it
 # from a terminal there) and network access. Takes about 15-20 minutes;
 # don't use the machine meanwhile.
@@ -20,9 +20,9 @@ set -uo pipefail
 
 dir="$(cd "${1:-content-shell}" && pwd)" || { echo "no content-shell directory" >&2; exit 1; }
 [[ -x $dir/lrb && -x $dir/lrb_coordinator ]] || { echo "lrb not found in $dir" >&2; exit 1; }
-work="$HOME/cro-minimum-test.$$"   # on disk: a tmpfs profile would turn caches into RAM
+work="$HOME/lrb-test.$$"   # on disk: a tmpfs profile would turn caches into RAM
 mkdir -p "$work"
-report="$PWD/cro-minimum-report-$(hostname)-$(date +%Y%m%d-%H%M).txt"
+report="$PWD/lrb-report-$(hostname)-$(date +%Y%m%d-%H%M).txt"
 SITES=(
   "https://en.wikipedia.org/wiki/Raspberry_Pi"
   "https://www.bbc.com/news"
@@ -65,7 +65,7 @@ stop_all() {
 }
 
 : > "$report"
-say "== cro-minimum device test, $(date -Iseconds)"
+say "== low-ram-browser device test, $(date -Iseconds)"
 say "binary: $(cat "$dir/CHROMIUM" 2>/dev/null) / $(cut -c1-12 "$dir/COMMIT" 2>/dev/null)"
 say "model: $(tr -d '\0' < /proc/device-tree/model 2>/dev/null || cat /sys/class/dmi/id/product_name 2>/dev/null)"
 say "os: $(. /etc/os-release; echo "$PRETTY_NAME") $(uname -mr)"

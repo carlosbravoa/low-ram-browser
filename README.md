@@ -1,6 +1,6 @@
-# cro-minimum
+# low-ram-browser (lrb)
 
-The minimum Chromium. A Chromium-based browser with the smallest memory footprint that still
+A Chromium-based browser with the smallest memory footprint that still
 browses the mainstream web, for machines where every kilobyte counts:
 2 GB laptops, a 1 GB Raspberry Pi, or any computer whose RAM other programs
 already hold.
@@ -11,9 +11,6 @@ It is built on Chromium's `//content` layer, not the Chrome product, and
 follows Chromium's Stable releases. Every change is judged by measured
 memory, and keeping mainstream sites working is the hard constraint. The
 numbers and how to reproduce them are in [MEASUREMENTS.md](MEASUREMENTS.md).
-
-The browser's programs are called `lrb` (low-ram-browser) and
-`lrb_coordinator`.
 
 **Status: experimental.** It is usable day to day, but the whole-browser
 OS confinement (Landlock, seccomp) that replaces Chromium's per-renderer
