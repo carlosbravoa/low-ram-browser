@@ -1,10 +1,12 @@
-# Daily at 03:00 (Stable security releases come about weekly).
+# Daily at 03:00 (Stable security releases come about weekly). Heavy:
+# a whole Chromium build; a missed night is skipped, not caught up by day.
 [Unit]
 Description=Daily check for a new Chromium Stable release for lrb
 
 [Timer]
 OnCalendar=*-*-* 03:00
-Persistent=true
+# No catch-up run after a missed night: builds only start at night.
+Persistent=false
 
 [Install]
 WantedBy=timers.target

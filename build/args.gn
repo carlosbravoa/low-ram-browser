@@ -38,7 +38,8 @@ ffmpeg_branding = "Chrome"
 # Build-time only. V8's metagen step runs `gn desc` over the whole tree,
 # where //chrome targets assert the features dropped above, so it fails;
 # false selects V8's older path for the same generated code. M154 had no
-# metagen step (the arg then warns "no effect"); M155 has it again.
-v8_use_metagen = false
+# metagen step; M155 has it again, under this name (main around M157
+# called it v8_use_metagen). GN warns "no effect" when it's gone.
+v8_use_metagen_instance_types = false
 
 # Keep: V8 sandbox (default on 64-bit), WebAssembly, dav1d (AV1 on YouTube).
