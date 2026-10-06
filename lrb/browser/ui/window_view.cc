@@ -1244,7 +1244,14 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
       ToggleBlocking();
       break;
     case kSettings:
-      ShowSettings(weak_factory_.GetWeakPtr());
+      // Confined under the coordinator, this instance can't write the
+      // settings: the coordinator opens them in a process of their own.
+      if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
+          client && client->has_coordinator()) {
+        client->SendToCoordinator("open-settings");
+      } else {
+        ShowSettings(weak_factory_.GetWeakPtr());
+      }
       break;
     case kDismissDownload:
       download_status_.reset();

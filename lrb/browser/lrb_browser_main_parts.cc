@@ -21,6 +21,7 @@
 #include "lrb/browser/saved_windows.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
+#include "lrb/browser/ui/settings_dialog.h"
 #include "lrb/common/lrb_switches.h"
 #include "lrb/coordinator/rules.h"
 #include "net/base/module/net_module.h"
@@ -90,6 +91,13 @@ int LrbBrowserMainParts::PreMainMessageLoopRun() {
 void LrbBrowserMainParts::OpenFirstWindow() {
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
+  if (command_line.HasSwitch(switches::kSettingsWindow)) {
+    ShowSettingsAlone(
+        command_line.GetSwitchValueASCII(switches::kSettingsWindow) ==
+            "first-start",
+        base::BindOnce(&Shell::Shutdown));
+    return;
+  }
   if (command_line.HasSwitch(switches::kUpdateLists)) {
     // The filter-list updater: no window; exits when done.
     list_updater_ = std::make_unique<ListUpdater>(

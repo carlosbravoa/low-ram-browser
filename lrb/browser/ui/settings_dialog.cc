@@ -38,12 +38,24 @@ class SettingsView : public views::View {
   METADATA_HEADER(SettingsView, views::View)
 
  public:
-  explicit SettingsView(const Settings& settings) : settings_(settings) {
+  SettingsView(const Settings& settings, bool first_start)
+      : settings_(settings), first_start_(first_start) {
     SetLayoutManager(std::make_unique<views::BoxLayout>(
                          views::BoxLayout::Orientation::kVertical,
                          gfx::Insets::VH(16, 20), 8))
         ->set_cross_axis_alignment(
             views::BoxLayout::CrossAxisAlignment::kStretch);
+    if (first_start) {
+      // The first start on a machine with a GPU (decided 2026-10-05): show
+      // the trade-off and ask; changeable later here.
+      Heading(u"Welcome to lrb");
+      Note(u"This computer has a graphics chip (GPU). lrb can draw pages "
+           u"with it, or without it in software. The GPU makes scrolling "
+           u"and video smoother but costs memory in every window: measured "
+           u"7 to 55 MB more per window on a Raspberry Pi 3, about 12 MB on "
+           u"a desktop with NVIDIA graphics. With little memory, software is "
+           u"the better choice. You can change this later in Settings.");
+    }
 
     Heading(u"Search engine");
     std::vector<ui::SimpleComboboxModel::Item> items;
@@ -116,8 +128,8 @@ class SettingsView : public views::View {
       settings.search_url = SearchEngines()[index].url;
     }
     // Rendering left as it was, never chosen: still unset (the first-start
-    // question asks then).
-    if (gpu_->GetChecked() || settings_.gpu) {
+    // question asks then). Answering that question sets it either way.
+    if (first_start_ || gpu_->GetChecked() || settings_.gpu) {
       settings.gpu = gpu_->GetChecked();
     }
     base::ThreadPool::PostTask(
@@ -138,6 +150,7 @@ class SettingsView : public views::View {
   }
 
   const Settings settings_;
+  const bool first_start_;
   std::unique_ptr<ui::SimpleComboboxModel> model_;
   size_t custom_index_ = 0;
   raw_ptr<views::Combobox> engine_ = nullptr;
@@ -154,12 +167,19 @@ END_METADATA
 // windows), and itself, until the window closes.
 class SettingsWindow {
  public:
-  SettingsWindow(const Settings& settings, gfx::NativeView parent) {
+  SettingsWindow(const Settings& settings,
+                 gfx::NativeView parent,
+                 bool first_start = false,
+                 base::OnceClosure closed = base::OnceClosure())
+      : closed_(std::move(closed)) {
     delegate_ = std::make_unique<views::DialogDelegate>();
-    auto* view =
-        delegate_->SetContentsView(std::make_unique<SettingsView>(settings));
-    delegate_->SetTitle(u"Settings");
-    delegate_->SetModalType(ui::mojom::ModalType::kWindow);
+    auto* view = delegate_->SetContentsView(
+        std::make_unique<SettingsView>(settings, first_start));
+    delegate_->SetTitle(first_start ? u"lrb" : u"Settings");
+    // Alone (no parent): a window of its own, not modal to anything.
+    if (parent) {
+      delegate_->SetModalType(ui::mojom::ModalType::kWindow);
+    }
     delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Save");
     delegate_->SetAcceptCallbackWithClose(base::BindRepeating(
         &SettingsView::Save, base::Unretained(view)));
@@ -185,9 +205,13 @@ class SettingsWindow {
   ~SettingsWindow() {
     widget_->CloseNow();  // the native window too, now (see lrb windows)
     widget_.reset();      // the widget before its delegate
+    if (closed_) {
+      std::move(closed_).Run();
+    }
   }
 
  private:
+  base::OnceClosure closed_;
   std::unique_ptr<views::DialogDelegate> delegate_;
   std::unique_ptr<views::Widget> widget_;
 };
@@ -208,6 +232,18 @@ void ShowSettings(base::WeakPtr<views::View> parent) {
                                parent->GetWidget()->GetNativeView());
           },
           parent));
+}
+
+void ShowSettingsAlone(bool first_start, base::OnceClosure closed) {
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
+      base::BindOnce(&Settings::Read),
+      base::BindOnce(
+          [](bool first_start, base::OnceClosure closed, Settings settings) {
+            new SettingsWindow(settings, gfx::NativeView(), first_start,
+                               std::move(closed));
+          },
+          first_start, std::move(closed)));
 }
 
 }  // namespace lrb

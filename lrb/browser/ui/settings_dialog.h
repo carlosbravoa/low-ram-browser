@@ -19,6 +19,13 @@ namespace lrb {
 // `parent`: a view of the window it belongs to.
 void ShowSettings(base::WeakPtr<views::View> parent);
 
+// The settings window on its own (lrb --lrb-settings): the process the
+// coordinator starts to change the settings, the only one allowed to write
+// them (confined instances can't: a hijacked page could change the search
+// engine). `first_start`: the first start's question about the GPU (its
+// memory trade-off) above the settings. `closed` runs when it closes.
+void ShowSettingsAlone(bool first_start, base::OnceClosure closed);
+
 }  // namespace lrb
 
 #endif  // LRB_BROWSER_UI_SETTINGS_DIALOG_H_

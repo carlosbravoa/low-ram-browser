@@ -51,6 +51,11 @@ inline constexpr char kRestoreLeft[] = "lrb-restore-left";
 inline constexpr char kMultiProcess[] = "lrb-multi-process";
 inline constexpr char kGpu[] = "lrb-gpu";
 
+// Show only the settings window, then exit (started by the coordinator: the
+// one process allowed to write the settings). "first-start": with the first
+// start's question about the GPU.
+inline constexpr char kSettingsWindow[] = "lrb-settings";
+
 }  // namespace lrb::switches
 
 #endif  // LRB_COMMON_LRB_SWITCHES_H_

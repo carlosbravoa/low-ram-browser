@@ -192,11 +192,14 @@ bool MakeDirs(const std::string& path, mode_t mode) {
 
 // What a confined instance may reach: the system's files (libraries, fonts,
 // certificates, devices), the desktop's settings it renders with, the filter
-// lists, and `rw_dir` (its profile) to write. Not the user's home: other
-// sites' profiles, keys, documents. Files the user picks reach it through the
-// coordinator (TODO: the picker broker).
+// lists and lrb's settings to read, and `rw_dir` (its profile) to write. Not
+// the user's home: other sites' profiles, keys, documents. Files the user
+// picks reach it through the coordinator (broker.h). `settings_writer`: the
+// settings window's process (no web content), the one that may write lrb's
+// settings.
 coordinator::ConfinePolicy InstancePolicy(const Options& options,
-                                          const std::string& rw_dir) {
+                                          const std::string& rw_dir,
+                                          bool settings_writer) {
   const std::string home = Getenv("HOME");
   auto xdg = [&home](const char* name, const char* fallback) {
     const std::string value = Getenv(name);
@@ -217,14 +220,12 @@ coordinator::ConfinePolicy InstancePolicy(const Options& options,
       xauthority.empty() ? home + "/.Xauthority" : xauthority,
       // Look and feel: GTK theme and settings, fonts, icons, cursors.
       config + "/gtk-3.0", config + "/gtk-4.0", config + "/fontconfig",
-      config + "/dconf", config + "/pulse", data + "/fonts", data + "/icons",
+      config + "/dconf", config + "/pulse", config + "/lrb", data + "/fonts",
+      data + "/icons",
       data + "/themes", home + "/.fonts", home + "/.icons", home + "/.themes",
   };
   policy.read_write = {
       rw_dir,
-      // TODO: the settings dialog writes here; move its writes to the
-      // coordinator so a hijacked page can't change the search engine.
-      config + "/lrb",
       "/dev/shm", "/dev/null", "/dev/zero", "/dev/full", "/dev/random",
       "/dev/urandom", "/dev/dri", "/dev/snd",
       cache + "/fontconfig", cache + "/mesa_shader_cache",
@@ -232,6 +233,10 @@ coordinator::ConfinePolicy InstancePolicy(const Options& options,
   };
   for (int i = 0; i < 8; ++i) {  // cameras
     policy.read_write.push_back("/dev/video" + std::to_string(i));
+  }
+  if (settings_writer) {
+    MakeDirs(config + "/lrb", 0700);
+    policy.read_write.push_back(config + "/lrb");
   }
   return policy;
 }
@@ -392,6 +397,7 @@ class Coordinator {
       return 1;
     }
     MaybeUpdateLists();
+    MaybeAskAboutGpu();
     WaitForFirstEngine();
     Launch(/*site=*/"", options_.url);
     while (children_ > 0 || !clients_.empty()) {
@@ -501,7 +507,10 @@ class Coordinator {
       Log("fd %d (%s): %s", client.fd,
           client.site.empty() ? "no site" : client.site.c_str(), line.c_str());
     }
-    if (command.starts_with("pick-") || command.starts_with("save-")) {
+    if (command == "open-settings") {
+      OpenSettings();
+    } else if (command.starts_with("pick-") || command.starts_with("save-") ||
+               command == "show-saved") {
       broker_.Handle(client.fd, client.profile, command, args);
     } else if (command == "active") {
       const bool reloading = client.discarded;
@@ -859,8 +868,73 @@ class Coordinator {
     Log("filter lists not ready after 15 s; first window without blocking");
   }
 
+  // The first start on a machine with a GPU (decided 2026-10-05): before the
+  // first window, the settings window asks whether to use it, with its
+  // memory cost. Asked until answered. Not without a display, nor for
+  // headless runs (tests, the harness).
+  void MaybeAskAboutGpu() {
+    const std::string home = Getenv("HOME");
+    const std::string config = Getenv("XDG_CONFIG_HOME").empty()
+                                   ? home + "/.config"
+                                   : Getenv("XDG_CONFIG_HOME");
+    std::string settings;
+    if (FILE* file = fopen((config + "/lrb/settings.json").c_str(), "r")) {
+      char buffer[4096];
+      settings.assign(buffer, fread(buffer, 1, sizeof(buffer), file));
+      fclose(file);
+    }
+    if (settings.find("\"gpu\"") != std::string::npos ||
+        (Getenv("DISPLAY").empty() && Getenv("WAYLAND_DISPLAY").empty())) {
+      return;
+    }
+    for (const std::string& arg : options_.browser_args) {
+      if (arg == "--ozone-platform=headless" || arg == "--lrb-gpu" ||
+          arg == "--disable-gpu") {
+        return;
+      }
+    }
+    bool gpu = false;
+    for (int i = 128; i < 136 && !gpu; ++i) {
+      struct stat st = {};
+      gpu = stat(("/dev/dri/renderD" + std::to_string(i)).c_str(), &st) == 0;
+    }
+    if (!gpu) {
+      return;
+    }
+    OpenSettings(/*first_start=*/true);
+    if (settings_pid_ > 0) {
+      int status = 0;
+      waitpid(settings_pid_, &status, 0);
+      child_profiles_.erase(settings_pid_);
+      settings_pid_ = 0;
+    }
+  }
+
+  // The settings window, in a process of its own that loads no web content
+  // and is the only one allowed to write lrb's settings. One at a time: a
+  // page can at most make it appear; the user decides.
+  void OpenSettings(bool first_start = false) {
+    if (settings_pid_ > 0) {
+      return;
+    }
+    const std::string profile = options_.profiles_dir + "/.settings";
+    MakeDirs(profile, 0700);
+    std::vector<std::string> args = {
+        options_.browser,
+        first_start ? "--lrb-settings=first-start" : "--lrb-settings",
+        "--user-data-dir=" + profile};
+    for (const std::string& arg : options_.browser_args) {
+      if (!arg.starts_with("--remote-debugging")) {
+        args.push_back(arg);
+      }
+    }
+    settings_pid_ = Spawn(std::move(args), profile, /*settings_writer=*/true);
+  }
+
   // Starts `args` (lrb), confined to writing `rw_dir` (see InstancePolicy).
-  pid_t Spawn(std::vector<std::string> args, const std::string& rw_dir) {
+  pid_t Spawn(std::vector<std::string> args,
+              const std::string& rw_dir,
+              bool settings_writer = false) {
     const pid_t pid = fork();
     if (pid == 0) {
       if (options_.confine) {
@@ -869,7 +943,8 @@ class Coordinator {
         MakeDirs(tmp, 0700);
         setenv("TMPDIR", tmp.c_str(), 1);
         std::string error;
-        if (!coordinator::Confine(InstancePolicy(options_, rw_dir), &error)) {
+        if (!coordinator::Confine(
+                InstancePolicy(options_, rw_dir, settings_writer), &error)) {
           fprintf(stderr, "lrb_coordinator: not starting %s: %s\n",
                   args[0].c_str(), error.c_str());
           _exit(126);
@@ -911,6 +986,8 @@ class Coordinator {
       if (pid == updater_pid_) {
         updater_pid_ = 0;
         Log("filter-list update finished");
+      } else if (pid == settings_pid_) {
+        settings_pid_ = 0;
       } else {
         --children_;
       }
@@ -928,6 +1005,7 @@ class Coordinator {
   Clock::time_point last_stuck_report_;
   Clock::time_point last_update_check_;
   pid_t updater_pid_ = 0;
+  pid_t settings_pid_ = 0;  // the settings window, while open
   // The site last launched for a user's request, until it registers.
   std::string wanted_site_;
 };
