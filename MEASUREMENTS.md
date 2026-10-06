@@ -77,6 +77,29 @@ content_shell for the same page (Chromium snapshot `chrome-default` against
 | Discarding a background window | Frees 81 of a page's 96 MB (84%), keeping the window and its history; Chromium's own `WebContents::Discard()` kept 33 MB more | `python3 -m lrb_harness session --lrb-dir ../dist/x64/content-shell` |
 | Build configuration (`build/args.gn`) | About 7 MB per browser, almost all file-backed | `cs-*` (snapshot) against `lrb-*` (our build) |
 
+## Raspberry Pi 3 Model B+ (1 GB)
+
+`tools/device_test.sh` on the v0.1.0-alpha.1 arm64 build: Debian 13 64-bit,
+X11, 905 MB RAM with 905 MB zram. One run each.
+
+| page | software | GPU |
+|---|---:|---:|
+| blank | 32.3 | 39.3 |
+| Wikipedia | 85.8 | 93.4 |
+| BBC News | 154.7 | 161.1 |
+| GitHub | 104.6 | 124.6 |
+| Reddit | 123.2 | 133.9 |
+| YouTube | 253.6 | 308.6 |
+
+Five sites opened one after another through `lrb_coordinator` (content
+blocking on): memory pressure began at the third site, the coordinator
+discarded the least recently used windows, and five open sites cost 325 MB
+with 242 MB still free. No kernel OOM kill.
+
+```sh
+tools/device_test.sh content-shell     # on the device, from its desktop
+```
+
 ## Chromium releases
 
 Stable 154 against the main-branch commit it replaced (157.0.8086.0): the
