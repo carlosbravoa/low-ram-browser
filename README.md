@@ -5,7 +5,7 @@ browses the mainstream web, for machines where every kilobyte counts:
 2 GB laptops, a 1 GB Raspberry Pi, or any computer whose RAM other programs
 already hold.
 
-![lrb's window bar on BBC News](docs/img/window-bar-bbc.png)
+![lrb's window bar and tabs on Wikipedia](docs/img/tabs.png)
 
 It is built on Chromium's `//content` layer, not the Chrome product, and
 follows Chromium's Stable releases. Every change is judged by measured
