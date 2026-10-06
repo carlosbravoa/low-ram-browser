@@ -1,0 +1,13 @@
+# name  url
+# file:// URLs are relative to this directory. Live sites change constantly:
+# compare configurations within one run date, not across dates.
+blank        about:blank
+static       file://pages/article.html
+wikipedia    https://en.wikipedia.org/wiki/Chromium_(web_browser)
+github       https://github.com/chromium/chromium
+bbc          https://www.bbc.com/news
+cnn          https://edition.cnn.com/
+reddit       https://www.reddit.com/r/linux/
+amazon       https://www.amazon.com/
+youtube      https://www.youtube.com/watch?v=aqz-KE-bpKQ
+maps         https://www.google.com/maps/@-33.4489,-70.6693,13z

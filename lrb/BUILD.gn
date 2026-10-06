@@ -1,0 +1,288 @@
+# Copyright 2026 The low-ram-browser Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The low-ram-browser embedder. Lives in the low-ram-browser repo and is
+# linked into the Chromium checkout as //lrb (build/link_lrb.sh).
+#
+# Started from content_shell; the parts lrb uses are copied in (trimmed of
+# web tests, test hooks and other platforms: lrb/browser/shell.h, the
+# clients, main parts, browser context), so lrb links nothing of
+# //content/shell but its resource pak.
+
+import("//build/rust/rust_static_library.gni")
+import("//tools/grit/repack.gni")
+import("//testing/test.gni")
+
+assert(is_linux, "low-ram-browser targets Linux only")
+
+executable("lrb") {
+  sources = [
+    "app/lrb_main.cc",
+    "app/lrb_main_delegate.cc",
+    "app/lrb_main_delegate.h",
+    "browser/activity_tracker.cc",
+    "browser/activity_tracker.h",
+    "browser/blocked_counter.cc",
+    "browser/blocked_counter.h",
+    "browser/blocking_url_loader_factory.cc",
+    "browser/blocking_url_loader_factory.h",
+    "browser/coordinator_client.cc",
+    "browser/coordinator_client.h",
+    "browser/devtools_manager_delegate.cc",
+    "browser/devtools_manager_delegate.h",
+    "browser/lrb_browser_main_parts.cc",
+    "browser/lrb_browser_main_parts.h",
+    "browser/download_manager_delegate.cc",
+    "browser/download_manager_delegate.h",
+    "browser/list_updater.cc",
+    "browser/lrb_browser_context.cc",
+    "browser/lrb_browser_context.h",
+    "browser/list_updater.h",
+    "browser/lrb_content_browser_client.cc",
+    "browser/lrb_content_browser_client.h",
+    "browser/permission_manager.cc",
+    "browser/permission_manager.h",
+    "browser/permissions/site_permissions.cc",
+    "browser/permissions/site_permissions.h",
+    "browser/saved_windows.cc",
+    "browser/saved_windows.h",
+    "browser/shell.cc",
+    "browser/shell.h",
+    "browser/site.cc",
+    "browser/site.h",
+    "browser/site_launcher.cc",
+    "browser/site_launcher.h",
+    "browser/site_window_throttle.cc",
+    "browser/site_window_throttle.h",
+    "browser/zoom_levels.cc",
+    "browser/zoom_levels.h",
+    "browser/ui/context_menu.cc",
+    "browser/ui/context_menu.h",
+    "browser/ui/file_picker.cc",
+    "browser/ui/file_picker.h",
+    "browser/ui/javascript_dialogs.cc",
+    "browser/ui/javascript_dialogs.h",
+    "browser/ui/login_prompt.cc",
+    "browser/ui/login_prompt.h",
+    "browser/ui/lrb_platform_delegate.cc",
+    "browser/ui/lrb_platform_delegate.h",
+    "browser/ui/settings_dialog.cc",
+    "browser/ui/settings_dialog.h",
+    "browser/ui/window_view.cc",
+    "browser/ui/window_view.h",
+    "common/content_blocker.cc",
+    "common/content_blocker.h",
+    "common/lrb_content_client.cc",
+    "common/lrb_content_client.h",
+    "common/lrb_switches.h",
+    "renderer/cosmetic_filter.cc",
+    "renderer/cosmetic_filter.h",
+    "renderer/lrb_content_renderer_client.cc",
+    "renderer/lrb_content_renderer_client.h",
+  ]
+
+  deps = [
+    ":adblock_rust",
+    ":coordinator_rules",
+    ":settings",
+    "//base",
+    "//base:i18n",
+    "//components/embedder_support",
+    "//components/embedder_support:user_agent",
+    "//components/embedder_support/origin_trials",
+    "//components/keyed_service/content",
+    "//components/keyed_service/core",
+    "//components/memory_system",
+    "//components/network_hints/browser",
+    "//components/network_hints/renderer",
+    "//components/origin_trials:browser",
+    "//components/origin_trials:common",
+    "//components/performance_manager",
+    "//components/variations",
+    "//components/variations/field_trial_config",
+    "//components/variations/service:buildflags",
+    "//components/vector_icons",
+    "//components/version_info",
+    "//content/public/app",
+    "//content/public/browser",
+    "//content/public/child",
+    "//content/public/common",
+    "//content/public/gpu",
+    "//content/public/renderer",
+    "//content/public/utility",
+    "//device/bluetooth",
+    "//media",
+    "//components/download/public/common:public",
+    "//net",
+    "//net:net_resources",
+    "//services/network:network_service",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
+    "//third_party/blink/public:blink",
+    "//third_party/blink/public/common",
+    "//sandbox",
+    "//sandbox/policy",
+    "//ui/aura",
+    "//ui/base",
+    "//ui/color",
+    "//ui/display",
+    "//ui/events",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/linux:linux_ui_factory",
+    "//ui/menus",
+    "//ui/views",
+    "//ui/wm",
+    "//ui/shell_dialogs",
+    "//ui/views/controls/webview",
+    "//url",
+    "//v8",
+  ]
+
+  data_deps = [
+    ":pak",
+    "//tools/v8_context_snapshot",
+  ]
+}
+
+# lrb.pak: content_shell's resource pak without its test resources, the
+# shell's own resources and the DevTools frontend (lrb serves none).
+repack("pak") {
+  sources = [
+    "$root_gen_dir/base/tracing/protos/tracing_proto_resources.pak",
+    "$root_gen_dir/components/ukm_resources.pak",
+    "$root_gen_dir/content/browser/resources/media/media_internals_resources.pak",
+    "$root_gen_dir/content/browser/tracing/tracing_resources.pak",
+    "$root_gen_dir/content/browser/webrtc/resources/webrtc_internals_resources.pak",
+    "$root_gen_dir/content/content_resources.pak",
+    "$root_gen_dir/content/gpu_resources.pak",
+    "$root_gen_dir/content/histograms_resources.pak",
+    "$root_gen_dir/content/process_resources.pak",
+    "$root_gen_dir/content/quota_internals_resources.pak",
+    "$root_gen_dir/content/service_worker_resources.pak",
+    "$root_gen_dir/content/traces_internals_resources.pak",
+    "$root_gen_dir/mojo/public/js/mojo_bindings_resources.pak",
+    "$root_gen_dir/net/net_resources.pak",
+    "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
+    "$root_gen_dir/third_party/blink/public/resources/blink_scaled_resources_100_percent.pak",
+    "$root_gen_dir/third_party/blink/public/resources/inspector_overlay_resources.pak",
+    "$root_gen_dir/third_party/blink/public/strings/blink_strings_en-US.pak",
+    "$root_gen_dir/third_party/blink/public/strings/permission_element_generated_strings.pak",
+    "$root_gen_dir/third_party/blink/public/strings/permission_element_strings_en-US.pak",
+    "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
+    "$root_gen_dir/ui/resources/ui_resources_100_percent.pak",
+    "$root_gen_dir/ui/strings/app_locale_settings_en-US.pak",
+    "$root_gen_dir/ui/strings/auto_image_annotation_strings_en-US.pak",
+    "$root_gen_dir/ui/strings/ax_strings_en-US.pak",
+    "$root_gen_dir/ui/strings/ui_strings_en-US.pak",
+    "$root_gen_dir/ui/views/resources/views_resources_100_percent.pak",
+    "$root_gen_dir/ui/webui/resources/webui_resources.pak",
+  ]
+  deps = [
+    "//base/tracing/protos:chrome_track_event_resources",
+    "//components/ukm/debug:resources",
+    "//content:content_resources",
+    "//content/browser/resources",
+    "//content/browser/resources/media:resources",
+    "//content/browser/tracing:resources",
+    "//content/browser/webrtc/resources",
+    "//mojo/public/js:resources",
+    "//net:net_resources",
+    "//third_party/blink/public:devtools_inspector_resources",
+    "//third_party/blink/public:resources",
+    "//third_party/blink/public:scaled_resources_100_percent",
+    "//third_party/blink/public/strings",
+    "//third_party/blink/public/strings:permission_element_generated_strings",
+    "//third_party/blink/public/strings:permission_element_strings",
+    "//ui/resources",
+    "//ui/strings",
+    "//ui/views/resources",
+    "//ui/webui/resources",
+  ]
+  output = "$root_out_dir/lrb.pak"
+}
+
+# Maps sites to instances; a separate small program that never loads web
+# content. Deliberately links nothing from Chromium.
+# The user's settings file (lrb/common/settings.h).
+source_set("settings") {
+  sources = [
+    "common/settings.cc",
+    "common/settings.h",
+  ]
+  deps = [
+    "//base",
+    "//url",
+  ]
+}
+
+static_library("coordinator_rules") {
+  sources = [
+    "coordinator/rules.cc",
+    "coordinator/rules.h",
+  ]
+}
+
+executable("lrb_coordinator") {
+  sources = [
+    "coordinator/coordinator.cc",
+    "coordinator/pressure.cc",
+    "coordinator/pressure.h",
+  ]
+  deps = [ ":coordinator_rules" ]
+}
+
+test("lrb_unittests") {
+  sources = [
+    "common/settings_unittest.cc",
+    "coordinator/rules_unittest.cc",
+  ]
+  deps = [
+    ":coordinator_rules",
+    ":settings",
+    "//url",
+    "//testing/gtest",
+    "//testing/gtest:gtest_main",
+  ]
+}
+
+# Everything build/build.sh builds: our browser and content_shell as the
+# measurement reference. The build is generated from this group alone
+# (gn gen --root-pattern=//lrb:all): only the last --root-pattern counts.
+group("all") {
+  testonly = true
+  deps = [
+    ":lrb",
+    ":adblock_rust",
+    ":lrb_coordinator",
+    ":lrb_unittests",
+    "//content/shell:content_shell",
+  ]
+}
+
+# Content blocking: Brave's adblock-rust (//third_party/rust/lrb/adblock,
+# build/rust_crates.py) behind a small cxx bridge.
+rust_static_library("adblock_rust") {
+  crate_root = "adblock/lib.rs"
+  allow_unsafe = true
+  sources = [ crate_root ]
+  cxx_bindings = [ crate_root ]
+  deps = [
+    ":adblock_domain_resolver",
+    "//third_party/rust/lrb/adblock:lib",
+    "//third_party/rust/lrb/regex:lib",
+    "//third_party/rust/serde_json/v1:lib",
+  ]
+}
+
+source_set("adblock_domain_resolver") {
+  sources = [
+    "adblock/domain_resolver.cc",
+    "adblock/domain_resolver.h",
+  ]
+  deps = [
+    "//build/rust:cxx_cppdeps",
+    "//net",
+  ]
+}

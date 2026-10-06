@@ -1,0 +1,43 @@
+# Phase 1 build: stock content_shell, size-focused release build.
+# No source patches yet: this isolates what build configuration alone saves,
+# compared against the Phase 0 snapshot of the same commit.
+# target_cpu is appended by build/build.sh. Every arg below was checked to
+# exist at CHROMIUM_COMMIT.
+
+is_debug = false
+is_official_build = true        # ThinLTO, CFI, PGO (needs checkout_pgo_profiles)
+is_component_build = false
+dcheck_always_on = false
+
+# No debug info in the shipped binary. Doesn't change resident memory much
+# (symbols aren't loaded), but makes binaries copyable to small devices.
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+
+# Features a minimal browser drops.
+enable_pdf = false
+enable_printing = false
+enable_print_preview = false
+use_cups = false
+enable_widevine = false          # no DRM: Netflix/Spotify web won't play
+enable_vr = false
+enable_remoting = false
+use_kerberos = false
+enable_mdns = false
+
+# GTK is dlopen'd for theming and file dialogs and costs resident memory.
+# Off to measure; the browser will need its own (or a portal) file chooser.
+use_gtk = false
+
+# Mainstream video still needs H.264/AAC. Patent licensing applies when
+# distributing; see docs/building.md.
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+
+# (Main around M157 needed `v8_use_metagen = false`: V8's metagen step runs
+# `gn desc` over the whole tree, where //chrome targets assert the features
+# dropped above. M154 has no metagen step. If a milestone brings it, the
+# build fails in metagen: set it again.)
+
+# Keep: V8 sandbox (default on 64-bit), WebAssembly, dav1d (AV1 on YouTube).

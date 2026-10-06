@@ -1,0 +1,16 @@
+# Checks for a new Chromium Stable release and, if there is one, builds and
+# tests lrb on it (build/update_stable.sh). Install for the build user:
+#   mkdir -p ~/.config/systemd/user
+#   ln -s "$PWD"/build/systemd/lrb-update-stable.* ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now lrb-update-stable.timer
+# Edit WorkingDirectory if the repo isn't at ~/devel/low-ram-browser.
+[Unit]
+Description=Update lrb to Chromium's current Stable release
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/devel/low-ram-browser
+Environment=PATH=%h/chromium/depot_tools:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/devel/low-ram-browser/build/update_stable.sh
+Nice=10

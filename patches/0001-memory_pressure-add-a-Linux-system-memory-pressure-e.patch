@@ -1,0 +1,477 @@
+From f96b007c3303c337fd027a6ef70b50cbcfe5f0c1 Mon Sep 17 00:00:00 2001
+From: Carlos Bravo <cbravoa@gmail.com>
+Date: Sat, 3 Oct 2026 21:27:15 -0300
+Subject: [PATCH] memory_pressure: add a Linux system memory pressure evaluator
+
+//content has no memory pressure source on Linux:
+CreateDefaultSystemEvaluator() returned nullptr outside Windows, macOS and
+Fuchsia, so a browser under a cgroup limit allocated until the OOM killer
+ended it, though a pressure signal frees 15-40% on real sites.
+
+The evaluator polls (250 ms) every cgroup v2 budget from the process's
+cgroup up to the root (memory.max / memory.high against memory.current
+minus inactive page cache) plus the system (MemAvailable/MemTotal), and
+votes moderate below 30% left and critical below 15% of the tightest one.
+PSI "some avg10" >= 20 raises it to at least moderate. Thresholds and
+period are params of the LinuxMemoryPressureEvaluator feature (enabled by
+default). Kernel files are read with ReadFileToStringNonBlocking on the
+evaluator's sequence. Level changes are logged at
+--vmodule=system_memory_pressure_evaluator_linux=1.
+
+Under a 256 MB cap it kept 8 of 10 test sites working, against 6 without
+it; under 192 MB, 5 against 3. Page load times were unchanged.
+---
+ components/memory_pressure/BUILD.gn           |   7 +
+ .../system_memory_pressure_evaluator.cc       |   8 +
+ .../system_memory_pressure_evaluator_linux.cc | 295 ++++++++++++++++++
+ .../system_memory_pressure_evaluator_linux.h  |  92 ++++++
+ 4 files changed, 402 insertions(+)
+ create mode 100644 components/memory_pressure/system_memory_pressure_evaluator_linux.cc
+ create mode 100644 components/memory_pressure/system_memory_pressure_evaluator_linux.h
+
+diff --git a/components/memory_pressure/BUILD.gn b/components/memory_pressure/BUILD.gn
+index 0764777b5e..a93af7f308 100644
+--- a/components/memory_pressure/BUILD.gn
++++ b/components/memory_pressure/BUILD.gn
+@@ -26,6 +26,13 @@ source_set("memory_pressure") {
+     ]
+   }
+ 
++  if (is_linux) {
++    sources += [
++      "system_memory_pressure_evaluator_linux.cc",
++      "system_memory_pressure_evaluator_linux.h",
++    ]
++  }
++
+   if (is_apple) {
+     sources += [
+       "system_memory_pressure_evaluator_mac.cc",
+diff --git a/components/memory_pressure/system_memory_pressure_evaluator.cc b/components/memory_pressure/system_memory_pressure_evaluator.cc
+index f6f5a15639..3bd1d8c7b1 100644
+--- a/components/memory_pressure/system_memory_pressure_evaluator.cc
++++ b/components/memory_pressure/system_memory_pressure_evaluator.cc
+@@ -16,6 +16,8 @@
+ #include "components/memory_pressure/system_memory_pressure_evaluator_mac.h"
+ #elif BUILDFLAG(IS_WIN)
+ #include "components/memory_pressure/system_memory_pressure_evaluator_win.h"
++#elif BUILDFLAG(IS_LINUX)
++#include "components/memory_pressure/system_memory_pressure_evaluator_linux.h"
+ #endif
+ 
+ namespace memory_pressure {
+@@ -39,6 +41,12 @@ SystemMemoryPressureEvaluator::CreateDefaultSystemEvaluator(
+       std::make_unique<memory_pressure::win::SystemMemoryPressureEvaluator>(
+           monitor->CreateVoter());
+   return evaluator;
++#elif BUILDFLAG(IS_LINUX)
++  if (base::FeatureList::IsEnabled(os_linux::kLinuxMemoryPressureEvaluator)) {
++    return std::make_unique<os_linux::SystemMemoryPressureEvaluator>(
++        monitor->CreateVoter());
++  }
++  return nullptr;
+ #else
+   // Chrome OS and Chromecast evaluators are created in separate components.
+   return nullptr;
+diff --git a/components/memory_pressure/system_memory_pressure_evaluator_linux.cc b/components/memory_pressure/system_memory_pressure_evaluator_linux.cc
+new file mode 100644
+index 0000000000..020b6e12e3
+--- /dev/null
++++ b/components/memory_pressure/system_memory_pressure_evaluator_linux.cc
+@@ -0,0 +1,295 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/memory_pressure/system_memory_pressure_evaluator_linux.h"
++
++#include <algorithm>
++#include <optional>
++#include <string_view>
++
++#include "base/feature_list.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/logging.h"
++#include "base/metrics/field_trial_params.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_split.h"
++#include "base/strings/string_util.h"
++#include "base/strings/stringprintf.h"
++
++namespace memory_pressure::os_linux {
++
++BASE_FEATURE(kLinuxMemoryPressureEvaluator,
++             "LinuxMemoryPressureEvaluator",
++             base::FEATURE_ENABLED_BY_DEFAULT);
++
++namespace {
++
++// Percent of a budget left below which moderate / critical pressure engages.
++// 30/15 with a 250 ms poll kept 8 of 10 test sites alive under a 256 MB cap,
++// against 6 with no evaluator and 7 with 20/10 at 1 s
++// (low-ram-browser MEASUREMENTS.md).
++BASE_FEATURE_PARAM(int,
++                   kModeratePercent,
++                   &kLinuxMemoryPressureEvaluator,
++                   "moderate_percent",
++                   30);
++BASE_FEATURE_PARAM(int,
++                   kCriticalPercent,
++                   &kLinuxMemoryPressureEvaluator,
++                   "critical_percent",
++                   15);
++// PSI "some avg10" (percent) at or above which pressure is at least moderate,
++// whatever the budgets say: tasks are already stalling on memory.
++BASE_FEATURE_PARAM(double,
++                   kPsiModerateAvg10,
++                   &kLinuxMemoryPressureEvaluator,
++                   "psi_moderate_avg10",
++                   20.0);
++// Page loads can allocate tens of MB per second: at 1 s, pages were killed
++// between two polls. Each poll reads a handful of small kernel files.
++BASE_FEATURE_PARAM(base::TimeDelta,
++                   kPollPeriod,
++                   &kLinuxMemoryPressureEvaluator,
++                   "poll_period",
++                   base::Milliseconds(250));
++
++// While pressure persists, listeners are re-notified at these intervals, not
++// on every poll: each notification makes them purge caches and collect
++// garbage, which costs CPU.
++constexpr base::TimeDelta kModerateRenotifyPeriod = base::Seconds(10);
++// Same as SystemMemoryPressureEvaluator::kRenotifyVotePeriod (not constexpr).
++constexpr base::TimeDelta kCriticalRenotifyPeriod = base::Seconds(5);
++
++std::optional<std::string> ReadKernelFile(const base::FilePath& path) {
++  std::string contents;
++  if (!base::ReadFileToStringNonBlocking(path, &contents)) {
++    return std::nullopt;
++  }
++  return contents;
++}
++
++// A cgroup v2 limit file: a byte count, or "max" for none.
++std::optional<int64_t> ReadLimit(const base::FilePath& path) {
++  std::optional<std::string> contents = ReadKernelFile(path);
++  if (!contents) {
++    return std::nullopt;
++  }
++  int64_t value;
++  if (!base::StringToInt64(base::TrimWhitespaceASCII(*contents, base::TRIM_ALL),
++                           &value)) {
++    return std::nullopt;  // "max"
++  }
++  return value;
++}
++
++// The value of `key` in a "key value" (memory.stat) or "Key: value kB"
++// (/proc/meminfo) file, scaled by `unit`.
++std::optional<int64_t> ReadKeyedValue(std::string_view contents,
++                                      std::string_view key,
++                                      int64_t unit) {
++  for (std::string_view line : base::SplitStringPiece(
++           contents, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++    std::vector<std::string_view> fields = base::SplitStringPiece(
++        line, " :", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++    int64_t value;
++    if (fields.size() >= 2 && fields[0] == key &&
++        base::StringToInt64(fields[1], &value)) {
++      return value * unit;
++    }
++  }
++  return std::nullopt;
++}
++
++// "some avg10=1.23 avg60=... total=..." from a PSI file.
++std::optional<double> ReadPsiSomeAvg10(const base::FilePath& path) {
++  std::optional<std::string> contents = ReadKernelFile(path);
++  if (!contents) {
++    return std::nullopt;
++  }
++  for (std::string_view line : base::SplitStringPiece(
++           *contents, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++    if (!line.starts_with("some ")) {
++      continue;
++    }
++    for (std::string_view field : base::SplitStringPiece(
++             line, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++      double value;
++      if (field.starts_with("avg10=") &&
++          base::StringToDouble(field.substr(6), &value)) {
++        return value;
++      }
++    }
++  }
++  return std::nullopt;
++}
++
++// The calling process's cgroup v2 path, e.g. "/user.slice/app.scope".
++std::optional<std::string> OwnCgroupPath(const base::FilePath& procfs_root) {
++  std::optional<std::string> contents =
++      ReadKernelFile(procfs_root.Append("self/cgroup"));
++  if (!contents) {
++    return std::nullopt;
++  }
++  for (std::string_view line : base::SplitStringPiece(
++           *contents, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++    if (line.starts_with("0::")) {
++      return std::string(line.substr(3));
++    }
++  }
++  return std::nullopt;
++}
++
++const char* LevelName(base::MemoryPressureLevel level) {
++  switch (level) {
++    case base::MEMORY_PRESSURE_LEVEL_NONE:
++      return "none";
++    case base::MEMORY_PRESSURE_LEVEL_MODERATE:
++      return "moderate";
++    case base::MEMORY_PRESSURE_LEVEL_CRITICAL:
++      return "critical";
++  }
++  return "?";
++}
++
++}  // namespace
++
++SystemMemoryPressureEvaluator::SystemMemoryPressureEvaluator(
++    std::unique_ptr<MemoryPressureVoter> voter)
++    : memory_pressure::SystemMemoryPressureEvaluator(std::move(voter)),
++      moderate_percent_(kModeratePercent.Get()),
++      critical_percent_(kCriticalPercent.Get()),
++      psi_moderate_avg10_(kPsiModerateAvg10.Get()) {
++  VLOG(1) << "Linux memory pressure evaluator: moderate below "
++          << moderate_percent_ << "%, critical below " << critical_percent_
++          << "% of the tightest budget, polling every " << kPollPeriod.Get();
++  timer_.Start(FROM_HERE, kPollPeriod.Get(),
++               base::BindRepeating(&SystemMemoryPressureEvaluator::Poll,
++                                   base::Unretained(this)));
++}
++
++SystemMemoryPressureEvaluator::~SystemMemoryPressureEvaluator() {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++}
++
++// static
++MemorySnapshot SystemMemoryPressureEvaluator::TakeSnapshot(
++    const base::FilePath& sysfs_cgroup_root,
++    const base::FilePath& procfs_root) {
++  MemorySnapshot snapshot;
++
++  // Every cgroup from ours up to the root can carry a limit; the kernel
++  // enforces all of them, so each is a budget.
++  std::optional<std::string> cgroup = OwnCgroupPath(procfs_root);
++  if (cgroup) {
++    base::FilePath dir = sysfs_cgroup_root;
++    for (std::string_view part : base::SplitStringPiece(
++             *cgroup, "/", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++      dir = dir.Append(part);
++    }
++    while (true) {
++      std::optional<int64_t> max = ReadLimit(dir.Append("memory.max"));
++      std::optional<int64_t> high = ReadLimit(dir.Append("memory.high"));
++      std::optional<int64_t> limit = max;
++      if (high && (!limit || *high < *limit)) {
++        limit = high;  // above memory.high the kernel throttles and reclaims
++      }
++      std::optional<int64_t> current = ReadLimit(dir.Append("memory.current"));
++      std::optional<std::string> stat = ReadKernelFile(dir.Append("memory.stat"));
++      if (limit && current && stat && *limit > 0) {
++        // Inactive page cache is the first thing reclaim takes, so count it
++        // as free. Active file pages (the browser's own code) are not.
++        int64_t inactive_file =
++            ReadKeyedValue(*stat, "inactive_file", 1).value_or(0);
++        int64_t used = std::max<int64_t>(*current - inactive_file, 0);
++        snapshot.budgets.push_back(
++            {"cgroup:" + dir.value(), *limit,
++             std::max<int64_t>(*limit - used, 0)});
++      }
++      if (snapshot.psi_some_avg10 < 0) {
++        snapshot.psi_some_avg10 =
++            ReadPsiSomeAvg10(dir.Append("memory.pressure")).value_or(-1);
++      }
++      if (dir == sysfs_cgroup_root || dir.DirName() == dir) {
++        break;
++      }
++      dir = dir.DirName();
++    }
++  }
++
++  std::optional<std::string> meminfo =
++      ReadKernelFile(procfs_root.Append("meminfo"));
++  if (meminfo) {
++    std::optional<int64_t> total = ReadKeyedValue(*meminfo, "MemTotal", 1024);
++    std::optional<int64_t> available =
++        ReadKeyedValue(*meminfo, "MemAvailable", 1024);
++    if (total && available && *total > 0) {
++      snapshot.budgets.push_back({"system", *total, *available});
++    }
++  }
++  if (snapshot.psi_some_avg10 < 0) {
++    snapshot.psi_some_avg10 =
++        ReadPsiSomeAvg10(procfs_root.Append("pressure/memory")).value_or(-1);
++  }
++  return snapshot;
++}
++
++// static
++base::MemoryPressureLevel SystemMemoryPressureEvaluator::LevelFor(
++    const MemorySnapshot& snapshot,
++    int moderate_percent,
++    int critical_percent,
++    double psi_moderate_avg10) {
++  base::MemoryPressureLevel level = base::MEMORY_PRESSURE_LEVEL_NONE;
++  for (const MemoryBudget& budget : snapshot.budgets) {
++    const int64_t percent_left = budget.available * 100 / budget.limit;
++    if (percent_left < critical_percent) {
++      return base::MEMORY_PRESSURE_LEVEL_CRITICAL;
++    }
++    if (percent_left < moderate_percent) {
++      level = base::MEMORY_PRESSURE_LEVEL_MODERATE;
++    }
++  }
++  if (snapshot.psi_some_avg10 >= psi_moderate_avg10) {
++    level = std::max(level, base::MEMORY_PRESSURE_LEVEL_MODERATE);
++  }
++  return level;
++}
++
++void SystemMemoryPressureEvaluator::Poll() {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  const MemorySnapshot snapshot = TakeSnapshot(
++      base::FilePath("/sys/fs/cgroup"), base::FilePath("/proc"));
++  const base::MemoryPressureLevel old_level = current_vote();
++  const base::MemoryPressureLevel level = LevelFor(
++      snapshot, moderate_percent_, critical_percent_, psi_moderate_avg10_);
++  SetCurrentVote(level);
++
++  const base::TimeTicks now = base::TimeTicks::Now();
++  bool notify = level != old_level;
++  if (!notify && level != base::MEMORY_PRESSURE_LEVEL_NONE) {
++    const base::TimeDelta period = level == base::MEMORY_PRESSURE_LEVEL_CRITICAL
++                                       ? kCriticalRenotifyPeriod
++                                       : kModerateRenotifyPeriod;
++    notify = now - last_notification_ >= period;
++  }
++  if (notify && level != base::MEMORY_PRESSURE_LEVEL_NONE) {
++    last_notification_ = now;
++  }
++
++  if (level != old_level && VLOG_IS_ON(1)) {
++    std::string budgets;
++    for (const MemoryBudget& budget : snapshot.budgets) {
++      budgets += base::StringPrintf(" %s=%lld/%lldMB", budget.name.c_str(),
++                                    static_cast<long long>(budget.available >> 20),
++                                    static_cast<long long>(budget.limit >> 20));
++    }
++    VLOG(1) << "memory pressure " << LevelName(old_level) << " -> "
++            << LevelName(level) << " (available/limit:" << budgets
++            << "; psi some avg10=" << snapshot.psi_some_avg10 << ")";
++  }
++  SendCurrentVote(notify);
++}
++
++}  // namespace memory_pressure::os_linux
+diff --git a/components/memory_pressure/system_memory_pressure_evaluator_linux.h b/components/memory_pressure/system_memory_pressure_evaluator_linux.h
+new file mode 100644
+index 0000000000..c83fa6e09f
+--- /dev/null
++++ b/components/memory_pressure/system_memory_pressure_evaluator_linux.h
+@@ -0,0 +1,92 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_MEMORY_PRESSURE_SYSTEM_MEMORY_PRESSURE_EVALUATOR_LINUX_H_
++#define COMPONENTS_MEMORY_PRESSURE_SYSTEM_MEMORY_PRESSURE_EVALUATOR_LINUX_H_
++
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "base/feature_list.h"
++#include "base/files/file_path.h"
++#include "base/sequence_checker.h"
++#include "base/time/time.h"
++#include "base/timer/timer.h"
++#include "components/memory_pressure/system_memory_pressure_evaluator.h"
++
++namespace memory_pressure::os_linux {
++
++// Enables the Linux evaluator. Params (percent of the applicable limit left
++// before a level engages; poll period; PSI escalation) are tunable with
++// --enable-features=LinuxMemoryPressureEvaluator:moderate_percent/20/...
++BASE_DECLARE_FEATURE(kLinuxMemoryPressureEvaluator);
++
++// One memory budget the browser lives under: a cgroup v2 limit (memory.max
++// or memory.high) on the browser's cgroup or an ancestor, or the whole
++// system (/proc/meminfo).
++struct MemoryBudget {
++  std::string name;  // "cgroup:<path>" or "system"
++  int64_t limit = 0;      // bytes
++  int64_t available = 0;  // bytes left before the limit, counting
++                          // reclaimable page cache as free
++};
++
++struct MemorySnapshot {
++  std::vector<MemoryBudget> budgets;
++  // PSI "some avg10" for memory (percent of time some task stalled on
++  // memory over the last 10 s), from the nearest cgroup or /proc/pressure.
++  // Negative when unavailable.
++  double psi_some_avg10 = -1;
++};
++
++// Polls the browser's memory budgets and votes on memory pressure.
++//
++// //content has no memory pressure source on Linux, so without this the
++// browser never frees caches before the kernel's OOM killer ends it. The
++// budget that matters is often a cgroup limit (systemd scopes, containers,
++// --memory-max in tests), not system RAM, so both are checked and the
++// tightest wins.
++class SystemMemoryPressureEvaluator
++    : public memory_pressure::SystemMemoryPressureEvaluator {
++ public:
++  explicit SystemMemoryPressureEvaluator(
++      std::unique_ptr<MemoryPressureVoter> voter);
++  ~SystemMemoryPressureEvaluator() override;
++
++  SystemMemoryPressureEvaluator(const SystemMemoryPressureEvaluator&) = delete;
++  SystemMemoryPressureEvaluator& operator=(
++      const SystemMemoryPressureEvaluator&) = delete;
++
++  // Reads the budgets of the calling process. `sysfs_cgroup_root` is normally
++  // /sys/fs/cgroup and `procfs_root` /proc; both are parameters for tests.
++  // Only kernel files are read, without blocking, so it runs on the
++  // evaluator's own sequence.
++  static MemorySnapshot TakeSnapshot(const base::FilePath& sysfs_cgroup_root,
++                                     const base::FilePath& procfs_root);
++
++  // The pressure level a snapshot implies: the worst level over all budgets,
++  // raised to at least moderate when PSI shows sustained stalls.
++  static base::MemoryPressureLevel LevelFor(const MemorySnapshot& snapshot,
++                                            int moderate_percent,
++                                            int critical_percent,
++                                            double psi_moderate_avg10);
++
++ private:
++  void Poll();
++
++  const int moderate_percent_;
++  const int critical_percent_;
++  const double psi_moderate_avg10_;
++
++  base::RepeatingTimer timer_;
++  base::TimeTicks last_notification_;
++
++  SEQUENCE_CHECKER(sequence_checker_);
++};
++
++}  // namespace memory_pressure::os_linux
++
++#endif  // COMPONENTS_MEMORY_PRESSURE_SYSTEM_MEMORY_PRESSURE_EVALUATOR_LINUX_H_
+-- 
+2.53.0
+

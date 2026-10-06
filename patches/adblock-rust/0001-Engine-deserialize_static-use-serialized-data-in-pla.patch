@@ -1,0 +1,145 @@
+From 4d0e407ba10e94292350bd0b1538185716738130 Mon Sep 17 00:00:00 2001
+From: Carlos Bravo <cbravoa@gmail.com>
+Date: Sun, 4 Oct 2026 13:27:38 -0300
+Subject: [PATCH] Engine::deserialize_static: use serialized data in place
+
+Engine::deserialize copies the engine data into a private Vec. For a
+process that maps a read-only file shared with other processes, that copy
+duplicates the data in each one (6.8 MB with EasyList, EasyPrivacy and
+the uBlock Origin lists). VerifiedFlatbufferMemory can now borrow a
+'static slice instead; Engine::deserialize_static uses it, always runs
+the FlatBuffer verifier (the file may be visible to other processes), and
+rejects data that isn't 8-byte aligned. Engine::serialized_header_length
+lets callers place the data at an aligned offset in a file.
+
+Measured, full lists: private memory per process 7.8 MB copied, 0.8 MB in
+place; load 10 ms vs 21 ms (verification); matching speed unchanged.
+---
+ src/engine.rs                   | 35 +++++++++++++++++++++++++++++
+ src/flatbuffers/unsafe_tools.rs | 40 ++++++++++++++++++++++++++++++---
+ 2 files changed, 72 insertions(+), 3 deletions(-)
+
+diff --git a/src/engine.rs b/src/engine.rs
+index e0852a2..bd5bbaa 100644
+--- a/src/engine.rs
++++ b/src/engine.rs
+@@ -466,6 +466,41 @@ impl Engine {
+     }
+ }
+ 
++impl Engine {
++    /// Like [`Engine::deserialize`], but uses `serialized` in place instead of
++    /// copying it: for data that stays mapped for the life of the process,
++    /// such as a read-only file shared by several processes. The FlatBuffer
++    /// verifier always runs. The engine data inside `serialized` (after the
++    /// DAT header) must be 8-byte aligned; returns an error otherwise.
++    pub fn deserialize_static(
++        &mut self,
++        serialized: &'static [u8],
++    ) -> Result<(), DeserializationError> {
++        let current_tags = self.blocker.tags_enabled();
++
++        let payload = deserialize_dat_file(serialized)?;
++        let memory = VerifiedFlatbufferMemory::from_static(payload.data)
++            .map_err(DeserializationError::FlatBufferParsingError)?;
++
++        let context = FilterDataContext::new(memory);
++        self.filter_data_context = context;
++        self.blocker =
++            Blocker::from_context(FilterDataContextRef::clone(&self.filter_data_context));
++        self.blocker
++            .use_tags(&current_tags.iter().map(|s| &**s).collect::<Vec<_>>());
++        self.cosmetic_cache = CosmeticFilterCache::from_context(FilterDataContextRef::clone(
++            &self.filter_data_context,
++        ));
++        Ok(())
++    }
++
++    /// Bytes of DAT header before the engine data in [`Engine::serialize`]'s
++    /// output, so callers can place the data at an aligned offset in a file.
++    pub fn serialized_header_length() -> usize {
++        crate::data_format::HEADER_PREFIX_LENGTH
++    }
++}
++
+ fn load_flatbuffer_memory(
+     payload: DatFilePayload<'_>,
+ ) -> Result<VerifiedFlatbufferMemory, DeserializationError> {
+diff --git a/src/flatbuffers/unsafe_tools.rs b/src/flatbuffers/unsafe_tools.rs
+index 90a36e5..d335c19 100644
+--- a/src/flatbuffers/unsafe_tools.rs
++++ b/src/flatbuffers/unsafe_tools.rs
+@@ -42,13 +42,21 @@ pub fn fb_vector_to_slice<T>(vector: flatbuffers::Vector<'_, T>) -> &[T] {
+ //    This is necessary for fb_vector_to_slice.
+ pub(crate) struct VerifiedFlatbufferMemory {
+     // The buffer containing the flatbuffer data.
+-    raw_data: Vec<u8>,
++    raw_data: Storage,
+ 
+     // The offset of the data in the buffer.
+     // Must be aligned to MIN_ALIGNMENT bytes.
+     start: usize,
+ }
+ 
++// Where the flatbuffer bytes live: a private copy, or memory the caller
++// keeps alive for the rest of the process (e.g. a read-only mapped file
++// shared by several processes, so the engine data isn't duplicated in each).
++enum Storage {
++    Owned(Vec<u8>),
++    Static(&'static [u8]),
++}
++
+ impl VerifiedFlatbufferMemory {
+     pub(crate) fn from_raw(data: &[u8]) -> Result<Self, flatbuffers::InvalidFlatbuffer> {
+         let memory = Self::from_raw_unchecked(data);
+@@ -87,19 +95,45 @@ impl VerifiedFlatbufferMemory {
+         assert!((vec.as_ptr() as usize + start).is_multiple_of(MIN_ALIGNMENT));
+ 
+         let memory = Self {
+-            raw_data: vec,
++            raw_data: Storage::Owned(vec),
+             start,
+         };
+         assert!((memory.data().as_ptr() as usize).is_multiple_of(MIN_ALIGNMENT));
+         memory
+     }
+ 
++    // Wraps `data` in place, without copying, after running the FlatBuffer
++    // verifier (always: the bytes may come from a file other processes can
++    // see). `data` must be aligned to MIN_ALIGNMENT.
++    pub(crate) fn from_static(
++        data: &'static [u8],
++    ) -> Result<Self, flatbuffers::InvalidFlatbuffer> {
++        if !(data.as_ptr() as usize).is_multiple_of(MIN_ALIGNMENT) {
++            return Err(flatbuffers::InvalidFlatbuffer::Unaligned {
++                position: 0,
++                unaligned_type: "engine data (must be 8-byte aligned)".into(),
++                error_trace: Default::default(),
++            });
++        }
++        let memory = Self {
++            raw_data: Storage::Static(data),
++            start: 0,
++        };
++        #[cfg(test)]
++        root_as_engine_calls::record();
++        let _ = fb::root_as_engine(memory.data())?;
++        Ok(memory)
++    }
++
+     pub(crate) fn root(&self) -> fb::Engine<'_> {
+         unsafe { fb::root_as_engine_unchecked(self.data()) }
+     }
+ 
+     pub fn data(&self) -> &[u8] {
+-        &self.raw_data[self.start..]
++        match &self.raw_data {
++            Storage::Owned(vec) => &vec[self.start..],
++            Storage::Static(data) => &data[self.start..],
++        }
+     }
+ }
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,10 @@
+# Daily at 03:00 (Stable security releases come about weekly).
+[Unit]
+Description=Daily check for a new Chromium Stable release for lrb
+
+[Timer]
+OnCalendar=*-*-* 03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+# Lets the measured binaries create user namespaces for Chromium's sandbox
+# on hosts with kernel.apparmor_restrict_unprivileged_userns = 1 (Ubuntu
+# 23.10+). Without it the sandboxed configs (*-default, *-fewproc) abort with
+# "No usable sandbox!". Same shape as Ubuntu's own /etc/apparmor.d/chrome.
+# Install (paths assume the repo at ~/devel/low-ram-browser; edit if not):
+#   sudo cp phase0/apparmor/lrb-browsers /etc/apparmor.d/
+#   sudo apparmor_parser -r /etc/apparmor.d/lrb-browsers
+
+abi <abi/5.0>,
+include <tunables/global>
+
+profile lrb-browsers @{HOME}/devel/low-ram-browser/{prebuilt,dist}/**/{content_shell,chrome} flags=(unconfined) {
+  userns,
+}

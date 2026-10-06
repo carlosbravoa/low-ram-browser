@@ -1,0 +1,54 @@
+From 695fd88b18c77690346debc7242ab37b60e4da2a Mon Sep 17 00:00:00 2001
+From: Carlos Bravo <cbravoa@gmail.com>
+Date: Sun, 4 Oct 2026 16:31:10 -0300
+Subject: [PATCH] blink: MutedAutoplayRequiresUserActivation runtime feature
+
+Muted video is exempt from the autoplay policy: under
+document-user-activation-required, audible media waits for user
+activation but muted video plays at once. For low-memory embedders that
+is the expensive case: muted autoplay loops decode at full resolution,
+and CNN's front page plays four (1920x1080 and 1600x900, 180-270 MB).
+
+With this runtime feature (off by default) muted video gets no exemption
+and waits for user activation like audible media. Pages see the usual
+NotAllowedError from play() and show their play button.
+---
+ .../blink/renderer/core/html/media/autoplay_policy.cc      | 3 +++
+ .../blink/renderer/platform/runtime_enabled_features.json5 | 7 +++++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/third_party/blink/renderer/core/html/media/autoplay_policy.cc b/third_party/blink/renderer/core/html/media/autoplay_policy.cc
+index 6a713a6dfe..7bae1d55ae 100644
+--- a/third_party/blink/renderer/core/html/media/autoplay_policy.cc
++++ b/third_party/blink/renderer/core/html/media/autoplay_policy.cc
+@@ -144,6 +144,9 @@ bool AutoplayPolicy::DocumentHasUserExceptionFlag(const Document& document) {
+ // static
+ bool AutoplayPolicy::DocumentShouldAutoplayMutedVideos(
+     const Document& document) {
++  if (RuntimeEnabledFeatures::MutedAutoplayRequiresUserActivationEnabled()) {
++    return false;
++  }
+   return GetAutoplayPolicyForDocument(document) !=
+          AutoplayPolicy::Type::kNoUserGestureRequired;
+ }
+diff --git a/third_party/blink/renderer/platform/runtime_enabled_features.json5 b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+index 2292d62615..9a8a855abf 100644
+--- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
++++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+@@ -4423,6 +4423,13 @@
+       name: "MoveParagraphsPreserveInlineStructure",
+       status: "stable",
+     },
++    {
++      // Muted video gets no autoplay exemption: like audible media, it waits
++      // for user activation (under the document-user-activation-required
++      // policy). For low-memory embedders: muted autoplay loops decode at
++      // full resolution (four on CNN's front page: 180-270 MB).
++      name: "MutedAutoplayRequiresUserActivation",
++    },
+     {
+       name: "NavigateEventDeferCrossDocumentCommit",
+       status: "experimental",
+-- 
+2.53.0
+
