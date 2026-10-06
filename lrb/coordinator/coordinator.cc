@@ -8,7 +8,12 @@
 //   lrb_coordinator [--browser=PATH] [--profiles-dir=DIR] [--socket=PATH]
 //                   [--moderate-percent=N] [--critical-percent=N] [--verbose]
 //                   [--adblock-setting=full|lean|off] [--adblock-file=PATH]
-//                   [URL] [-- BROWSER_ARGS...]
+//                   [--no-confine] [--picker=PATH] [URL] [-- BROWSER_ARGS...]
+//
+// Every instance runs confined (confine.h): it reads the system's files, its
+// own profile and the settings, and nothing else of the user's; it can't
+// reach other instances' memory or signal anything outside. --no-confine is
+// for debugging only.
 //
 // Opens URL (or a blank window), then serves the instances' requests until
 // the last instance exits. A second coordinator started while one runs
@@ -95,6 +100,8 @@
 #include <string_view>
 #include <vector>
 
+#include "lrb/coordinator/broker.h"
+#include "lrb/coordinator/confine.h"
 #include "lrb/coordinator/pressure.h"
 #include "lrb/coordinator/rules.h"
 
@@ -124,6 +131,8 @@ struct Options {
   std::string adblock_file;
   int moderate_percent = 30;
   int critical_percent = 15;
+  bool confine = true;
+  std::string picker;  // lrb_picker; tests give a stand-in
 };
 
 using Clock = std::chrono::steady_clock;
@@ -145,6 +154,9 @@ __attribute__((format(printf, 1, 2))) void Log(const char* format, ...) {
 struct Client {
   int fd = -1;
   std::string site;  // empty until the instance reports it
+  // The profile this coordinator started the instance with, by its process
+  // (SO_PEERCRED): what the file broker trusts, never what it says.
+  std::string profile;
   std::string input;
   // New instances count as least recently used until the user is at them
   // ("active"), unless launched for a user's request (wanted_site_).
@@ -178,6 +190,52 @@ bool MakeDirs(const std::string& path, mode_t mode) {
   return true;
 }
 
+// What a confined instance may reach: the system's files (libraries, fonts,
+// certificates, devices), the desktop's settings it renders with, the filter
+// lists, and `rw_dir` (its profile) to write. Not the user's home: other
+// sites' profiles, keys, documents. Files the user picks reach it through the
+// coordinator (TODO: the picker broker).
+coordinator::ConfinePolicy InstancePolicy(const Options& options,
+                                          const std::string& rw_dir) {
+  const std::string home = Getenv("HOME");
+  auto xdg = [&home](const char* name, const char* fallback) {
+    const std::string value = Getenv(name);
+    return value.empty() ? home + fallback : value;
+  };
+  const std::string config = xdg("XDG_CONFIG_HOME", "/.config");
+  const std::string data = xdg("XDG_DATA_HOME", "/.local/share");
+  const std::string cache = xdg("XDG_CACHE_HOME", "/.cache");
+  const std::string runtime = Getenv("XDG_RUNTIME_DIR");
+  const std::string xauthority = Getenv("XAUTHORITY");
+
+  coordinator::ConfinePolicy policy;
+  policy.read_exec = {DirName(options.browser), "/usr", "/lib", "/lib64",
+                      "/lib32", "/bin", "/sbin"};
+  policy.read = {
+      "/etc", "/proc", "/sys", "/run", "/var/lib/dbus",
+      "/var/cache/fontconfig", DirName(options.adblock_file),
+      xauthority.empty() ? home + "/.Xauthority" : xauthority,
+      // Look and feel: GTK theme and settings, fonts, icons, cursors.
+      config + "/gtk-3.0", config + "/gtk-4.0", config + "/fontconfig",
+      config + "/dconf", config + "/pulse", data + "/fonts", data + "/icons",
+      data + "/themes", home + "/.fonts", home + "/.icons", home + "/.themes",
+  };
+  policy.read_write = {
+      rw_dir,
+      // TODO: the settings dialog writes here; move its writes to the
+      // coordinator so a hijacked page can't change the search engine.
+      config + "/lrb",
+      "/dev/shm", "/dev/null", "/dev/zero", "/dev/full", "/dev/random",
+      "/dev/urandom", "/dev/dri", "/dev/snd",
+      cache + "/fontconfig", cache + "/mesa_shader_cache",
+      runtime + "/dconf",
+  };
+  for (int i = 0; i < 8; ++i) {  // cameras
+    policy.read_write.push_back("/dev/video" + std::to_string(i));
+  }
+  return policy;
+}
+
 bool ParseOptions(int argc, char** argv, Options& options) {
   std::string self = argv[0];
   options.browser = DirName(self) + "/lrb";
@@ -208,6 +266,10 @@ bool ParseOptions(int argc, char** argv, Options& options) {
       options.adblock_file = arg.substr(15);
     } else if (arg == "--verbose") {
       options.verbose = true;
+    } else if (arg == "--no-confine") {
+      options.confine = false;
+    } else if (arg.starts_with("--picker=")) {
+      options.picker = arg.substr(9);
     } else if (arg.starts_with("--moderate-percent=")) {
       options.moderate_percent = atoi(std::string(arg.substr(19)).c_str());
     } else if (arg.starts_with("--critical-percent=")) {
@@ -281,9 +343,49 @@ bool HandToRunningCoordinator(const Options& options) {
   return true;
 }
 
+// The user's Downloads folder (XDG_DOWNLOAD_DIR in user-dirs.dirs), else
+// ~/Downloads.
+std::string UserDownloadsDir() {
+  const std::string home = Getenv("HOME");
+  const std::string config = Getenv("XDG_CONFIG_HOME").empty()
+                                 ? home + "/.config"
+                                 : Getenv("XDG_CONFIG_HOME");
+  if (FILE* file = fopen((config + "/user-dirs.dirs").c_str(), "r")) {
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), file)) {
+      std::string line = buffer;
+      if (!line.starts_with("XDG_DOWNLOAD_DIR=\"")) {
+        continue;
+      }
+      line = line.substr(18, line.rfind('"') - 18);
+      if (line.starts_with("$HOME")) {
+        line = home + line.substr(5);
+      }
+      fclose(file);
+      if (!line.empty() && line != home && line != home + "/") {
+        return line;
+      }
+      return home + "/Downloads";
+    }
+    fclose(file);
+  }
+  return home + "/Downloads";
+}
+
 class Coordinator {
  public:
-  explicit Coordinator(Options options) : options_(std::move(options)) {}
+  explicit Coordinator(Options options)
+      : options_(std::move(options)),
+        broker_(options_.picker.empty()
+                    ? DirName(options_.browser) + "/lrb_picker"
+                    : options_.picker,
+                UserDownloadsDir(),
+                [this](int fd, const std::string& line) {
+                  if (fd >= 0 && clients_.contains(fd) &&
+                      !WriteAll(fd, line + "\n")) {
+                    Drop(fd);
+                  }
+                }) {}
 
   int Run() {
     if (!Listen()) {
@@ -328,6 +430,10 @@ class Coordinator {
     for (const auto& [fd, client] : clients_) {
       fds.push_back({fd, POLLIN, 0});
     }
+    const size_t first_picker = fds.size();
+    for (int fd : broker_.fds()) {
+      fds.push_back({fd, POLLIN, 0});
+    }
     // Wakes every 250 ms to check memory pressure and reap instances.
     if (poll(fds.data(), fds.size(), 250) <= 0) {
       return;
@@ -336,11 +442,21 @@ class Coordinator {
       const int fd = accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
       if (fd >= 0) {
         clients_[fd].fd = fd;
+        ucred peer = {};
+        socklen_t size = sizeof(peer);
+        if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) == 0 &&
+            child_profiles_.contains(peer.pid)) {
+          clients_[fd].profile = child_profiles_.at(peer.pid);
+        }
       }
     }
     for (size_t i = 1; i < fds.size(); ++i) {
       if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
-        ReadFrom(fds[i].fd);
+        if (i < first_picker) {
+          ReadFrom(fds[i].fd);
+        } else {
+          broker_.OnReadable(fds[i].fd);  // a picker answered
+        }
       }
     }
   }
@@ -370,6 +486,7 @@ class Coordinator {
   }
 
   void Drop(int fd) {
+    broker_.Forget(fd);
     close(fd);
     clients_.erase(fd);
   }
@@ -384,7 +501,9 @@ class Coordinator {
       Log("fd %d (%s): %s", client.fd,
           client.site.empty() ? "no site" : client.site.c_str(), line.c_str());
     }
-    if (command == "active") {
+    if (command.starts_with("pick-") || command.starts_with("save-")) {
+      broker_.Handle(client.fd, client.profile, command, args);
+    } else if (command == "active") {
       const bool reloading = client.discarded;
       client.last_active = Clock::now();
       client.discarded = false;
@@ -477,9 +596,10 @@ class Coordinator {
     std::vector<std::string> args = {options_.browser,
                                      "--lrb-coordinator=" + options_.socket_path,
                                      "--lrb-profiles-dir=" + options_.profiles_dir};
+    std::string profile;
     if (!site.empty()) {
       // Each site keeps its own profile across restarts.
-      const std::string profile = options_.profiles_dir + "/" + site;
+      profile = options_.profiles_dir + "/" + site;
       MakeDirs(profile, 0700);
       args.push_back("--user-data-dir=" + profile);
       args.push_back("--lrb-site=" + site);
@@ -488,7 +608,7 @@ class Coordinator {
       // instance only resolves the site. It sends its first page back with
       // "open <site> <url>" and exits, so the page opens with the right
       // profile. Its own profile is never used for browsing.
-      const std::string profile = options_.profiles_dir + "/.resolver";
+      profile = options_.profiles_dir + "/.resolver";
       MakeDirs(profile, 0700);
       args.push_back("--user-data-dir=" + profile);
     }
@@ -513,7 +633,7 @@ class Coordinator {
       args.push_back(url);
     }
 
-    if (Spawn(std::move(args)) > 0) {
+    if (Spawn(std::move(args), profile) > 0) {
       ++children_;
     }
   }
@@ -716,7 +836,7 @@ class Coordinator {
     }
     Log("updating filter lists (%s) into %s", options_.adblock_setting.c_str(),
         options_.adblock_file.c_str());
-    updater_pid_ = Spawn(args);
+    updater_pid_ = Spawn(args, dir);
   }
 
   // On a first run there is no engine file yet: wait for the updater (a few
@@ -739,9 +859,25 @@ class Coordinator {
     Log("filter lists not ready after 15 s; first window without blocking");
   }
 
-  pid_t Spawn(std::vector<std::string> args) {
+  // Starts `args` (lrb), confined to writing `rw_dir` (see InstancePolicy).
+  pid_t Spawn(std::vector<std::string> args, const std::string& rw_dir) {
     const pid_t pid = fork();
     if (pid == 0) {
+      if (options_.confine) {
+        // Temporary files in the profile: /tmp is outside the confinement.
+        const std::string tmp = rw_dir + "/tmp";
+        MakeDirs(tmp, 0700);
+        setenv("TMPDIR", tmp.c_str(), 1);
+        std::string error;
+        if (!coordinator::Confine(InstancePolicy(options_, rw_dir), &error)) {
+          fprintf(stderr, "lrb_coordinator: not starting %s: %s\n",
+                  args[0].c_str(), error.c_str());
+          _exit(126);
+        }
+        if (!error.empty()) {
+          fprintf(stderr, "lrb_coordinator: %s\n", error.c_str());
+        }
+      }
       std::vector<char*> argv;
       for (std::string& arg : args) {
         argv.push_back(arg.data());
@@ -753,13 +889,25 @@ class Coordinator {
     }
     if (pid < 0) {
       perror("lrb_coordinator: fork");
+    } else {
+      child_profiles_[pid] = rw_dir;
     }
     return pid;
   }
 
   void Reap() {
     pid_t pid;
-    while ((pid = waitpid(-1, nullptr, WNOHANG)) > 0) {
+    int status = 0;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+      if (broker_.OnChildExit(pid, status)) {
+        continue;
+      }
+      auto profile = child_profiles_.find(pid);
+      if (profile == child_profiles_.end()) {
+        continue;  // not ours to count (the file manager for show-saved)
+      }
+      coordinator::FileBroker::CleanProfile(profile->second);
+      child_profiles_.erase(profile);
       if (pid == updater_pid_) {
         updater_pid_ = 0;
         Log("filter-list update finished");
@@ -773,6 +921,9 @@ class Coordinator {
   int listen_fd_ = -1;
   int children_ = 0;
   std::map<int, Client> clients_;
+  coordinator::FileBroker broker_;
+  // Instances' profiles by process id (Spawn).
+  std::map<pid_t, std::string> child_profiles_;
   Clock::time_point last_discard_;
   Clock::time_point last_stuck_report_;
   Clock::time_point last_update_check_;

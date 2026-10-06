@@ -18,7 +18,7 @@ run() {  # timeout, test, argument
 for t in test_permissions.py test_dialogs.py test_downloads.py test_uploads.py test_devtools_off.py test_identity.py; do
   DBUS_SESSION_BUS_ADDRESS=disabled: run 150 "$t" "$dir/lrb"
 done
-for t in test_coordinator.py test_close.py test_discard.py test_tab_sleep.py; do
+for t in test_coordinator.py test_close.py test_discard.py test_tab_sleep.py test_broker.py; do
   run 400 "$t" "$dir"
 done
 for t in test_site_windows.py test_back_x11.py test_permission_prompt_x11.py \

@@ -151,6 +151,18 @@ void LrbDownloadManagerDelegate::OnNameGenerated(
              std::vector<base::FilePath> paths) {
             switch (result) {
               case PickResult::kChosen:
+                // Through the coordinator without a picker: it chose the
+                // Downloads folder.
+                if (std::optional<BrokeredSave> save =
+                        GetBrokeredSave(paths.front());
+                    save && save->automatic && self && self->manager_) {
+                  if (download::DownloadItem* item =
+                          self->manager_->GetDownload(id)) {
+                    item->SetUserData(
+                        kSavedWithoutAsking,
+                        std::make_unique<base::SupportsUserData::Data>());
+                  }
+                }
                 RunTarget(std::move(callback), paths.front());
                 return;
               case PickResult::kCanceled:
@@ -208,6 +220,14 @@ void LrbDownloadManagerDelegate::OnDownloadUpdated(
   status.id = item->GetId();
   status.name = item->GetTargetFilePath().BaseName().LossyDisplayName();
   status.path = item->GetTargetFilePath();
+  // Written in this profile for the coordinator to move (file_picker.h): the
+  // bar shows where it goes.
+  const std::optional<BrokeredSave> brokered =
+      GetBrokeredSave(item->GetTargetFilePath());
+  if (brokered) {
+    status.path = brokered->target;
+    status.broker_id = brokered->id;
+  }
   status.percent = item->PercentComplete();
   status.saved_without_asking = item->GetUserData(kSavedWithoutAsking);
   switch (item->GetState()) {
@@ -215,12 +235,37 @@ void LrbDownloadManagerDelegate::OnDownloadUpdated(
       status.state = WindowView::DownloadStatus::State::kInProgress;
       break;
     case download::DownloadItem::COMPLETE:
-      status.state = WindowView::DownloadStatus::State::kDone;
+      if (brokered && brokered->state == BrokeredSave::State::kMoved) {
+        status.state = WindowView::DownloadStatus::State::kDone;
+      } else if (brokered &&
+                 brokered->state == BrokeredSave::State::kFailed) {
+        status.state = WindowView::DownloadStatus::State::kFailed;
+      } else if (brokered) {
+        // Done once the coordinator has moved it into place.
+        status.state = WindowView::DownloadStatus::State::kInProgress;
+        FinishBrokeredSave(
+            item->GetTargetFilePath(),
+            base::BindOnce(
+                [](base::WeakPtr<WindowView> view,
+                   WindowView::DownloadStatus status, bool moved) {
+                  status.state =
+                      moved ? WindowView::DownloadStatus::State::kDone
+                            : WindowView::DownloadStatus::State::kFailed;
+                  if (view) {
+                    view->ShowDownload(status);
+                  }
+                },
+                view->GetWeakPtr(), status));
+      } else {
+        status.state = WindowView::DownloadStatus::State::kDone;
+      }
       break;
     case download::DownloadItem::CANCELLED:
+      CancelBrokeredSave(item->GetTargetFilePath());
       status.state = WindowView::DownloadStatus::State::kCanceled;
       break;
     case download::DownloadItem::INTERRUPTED:
+      CancelBrokeredSave(item->GetTargetFilePath());
       status.state = WindowView::DownloadStatus::State::kFailed;
       break;
     case download::DownloadItem::MAX_DOWNLOAD_STATE:

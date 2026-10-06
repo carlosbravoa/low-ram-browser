@@ -49,6 +49,7 @@
 #include "lrb/browser/site_launcher.h"
 #include "lrb/browser/site_window_throttle.h"
 #include "lrb/browser/ui/context_menu.h"
+#include "lrb/browser/ui/file_picker.h"
 #include "lrb/browser/ui/login_prompt.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/common/content_blocker.h"
@@ -236,7 +237,16 @@ void LrbContentBrowserClient::ConnectToCoordinator() {
   }
 }
 
+void LrbContentBrowserClient::SendToCoordinator(const std::string& line) {
+  if (coordinator_) {
+    coordinator_->Send(line);
+  }
+}
+
 void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
+  if (OnBrokerLine(line)) {
+    return;  // files the user picked (ui/file_picker.h)
+  }
   if (line == "discard") {
     DiscardPages();
     return;

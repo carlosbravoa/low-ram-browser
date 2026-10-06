@@ -44,6 +44,8 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   void SetSite(const std::string& site);
 
   bool has_coordinator() const { return !!coordinator_; }
+  // Sends a line to the coordinator, if connected (the file broker).
+  void SendToCoordinator(const std::string& line);
 
   // Shows `url` in `site`'s window: through the coordinator, which reuses
   // an open window, or by launching an instance directly without one.

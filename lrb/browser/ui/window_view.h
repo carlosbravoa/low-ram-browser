@@ -155,6 +155,9 @@ class WindowView : public views::View,
     State state = State::kInProgress;
     // No picker to ask with: saved to the Downloads folder.
     bool saved_without_asking = false;
+    // Saved through the coordinator (confined): its id there, to show the
+    // folder (the file manager must not start inside the confinement).
+    std::string broker_id;
   };
   void ShowDownload(const DownloadStatus& status);
 

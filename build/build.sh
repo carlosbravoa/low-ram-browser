@@ -61,7 +61,7 @@ fi
 
 stage="$(mktemp -d)"
 mkdir -p "$stage/content-shell"
-for f in lrb lrb_coordinator lrb.pak content_shell content_shell.pak icudtl.dat v8_context_snapshot.bin snapshot_blob.bin \
+for f in lrb lrb_coordinator lrb_picker lrb.pak content_shell content_shell.pak icudtl.dat v8_context_snapshot.bin snapshot_blob.bin \
          libEGL.so libGLESv2.so libvk_swiftshader.so vk_swiftshader_icd.json; do
   [[ -e $out/$f ]] && cp -a "$out/$f" "$stage/content-shell/"
 done

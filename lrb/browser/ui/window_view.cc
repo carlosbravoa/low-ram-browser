@@ -1220,7 +1220,12 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
       }
       break;
     case kShowDownload:
-      if (download_status_) {
+      if (download_status_ && !download_status_->broker_id.empty()) {
+        if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
+          client->SendToCoordinator("show-saved " +
+                                    download_status_->broker_id);
+        }
+      } else if (download_status_) {
         // The desktop's file manager, on the folder (never opens the file).
         base::ThreadPool::PostTask(
             FROM_HERE, {base::MayBlock()},

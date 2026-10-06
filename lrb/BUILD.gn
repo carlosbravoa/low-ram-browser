@@ -226,11 +226,25 @@ static_library("coordinator_rules") {
 
 executable("lrb_coordinator") {
   sources = [
+    "coordinator/broker.cc",
+    "coordinator/broker.h",
+    "coordinator/confine.cc",
+    "coordinator/confine.h",
     "coordinator/coordinator.cc",
     "coordinator/pressure.cc",
     "coordinator/pressure.h",
   ]
   deps = [ ":coordinator_rules" ]
+}
+
+# The desktop's file picker (XDG portal) for the coordinator's file broker
+# (coordinator/broker.h): confined instances can't open the user's files.
+executable("lrb_picker") {
+  sources = [ "coordinator/picker.cc" ]
+  configs += [
+    "//build/config/linux:glib",
+    "//build/linux:gio_config",
+  ]
 }
 
 test("lrb_unittests") {
@@ -256,6 +270,7 @@ group("all") {
     ":lrb",
     ":adblock_rust",
     ":lrb_coordinator",
+    ":lrb_picker",
     ":lrb_unittests",
     "//content/shell:content_shell",
   ]
