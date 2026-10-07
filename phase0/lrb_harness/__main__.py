@@ -32,6 +32,9 @@ def main():
     p.add_argument("--pages-file", default=os.path.join(run.PHASE0, "pages.txt"))
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--settle", type=float, default=10, help="seconds after scrolling before sampling")
+    p.add_argument("--perf", action="store_true",
+                   help="also measure smoothness: a 3 s smooth scroll's frame times, and 10 s "
+                        "of the page's first video (dropped frames); use --display native")
     p.add_argument("--load-timeout", type=float, default=30)
     p.add_argument("--display", choices=["headless", "native"], default="headless",
                    help="headless: Ozone headless platform (no window, reproducible); "

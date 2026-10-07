@@ -12,7 +12,11 @@
 #    whether it survived.
 # 3. A real session through lrb_coordinator (content blocking on): five
 #    sites opened one after another; free memory, lrb's memory and processes
-#    after each, and whether the coordinator discarded or closed anything.
+#    after each, whether the coordinator discarded or closed anything, and
+#    whether instances run confined (Landlock, seccomp).
+# 4. Speed, software rendering against the GPU (needs the repo, for the
+#    harness: run this script from a clone): load time, scroll frames,
+#    video dropped frames, on the real display.
 #
 # Optional: UPLOAD_URL=http://host:port/api/upload?path=dir/ uploads the
 # report there (an HTTP PUT; the file name is appended).
@@ -75,6 +79,8 @@ say "gpu: $( (command -v glxinfo >/dev/null && glxinfo -B 2>/dev/null | grep -m1
 say "memory:"; free -m | tee -a "$report"
 say "swap/zram: $(swapon --show=NAME,SIZE,TYPE --noheadings 2>/dev/null | tr '\n' ';')"
 say "tmp: $(findmnt -no FSTYPE /tmp 2>/dev/null)"
+say "security modules: $(cat /sys/kernel/security/lsm 2>/dev/null)"
+say "landlock ABI: $(python3 -c 'import ctypes; print(ctypes.CDLL(None).syscall(444, None, 0, 1))' 2>/dev/null) (-1: none, so instances can't be confined)"
 stop_all
 
 say ""
@@ -116,11 +122,29 @@ for i in "${!SITES[@]}"; do
   say "$(printf '%d sites open: lrb %s MB unreclaimable, %s MB total, %s processes; free %s MB' \
         $((i + 1)) "$anon" "$total" "$n" "$(avail)")"
 done
+pid=$(pgrep -f "^$dir/lrb " | head -1)
+[[ -n $pid ]] && say "an instance's confinement: $(grep -E 'NoNewPrivs|Seccomp:' /proc/$pid/status | tr '\n\t' '  ')"
 say "coordinator events:"
 grep -iE "discard|closing|pressure|launch|exited|killed" "$coordlog" | tail -40 | sed 's/^/    /' | tee -a "$report"
 kill $coord 2>/dev/null; stop_all
 say "kernel OOM kills during the test:"
 journalctl -k --since "-1h" -o cat 2>/dev/null | grep -iE "out of memory|oom-kill" | tail -5 | sed 's/^/    /' | tee -a "$report"
+
+harness="$(cd "$(dirname "$0")/../phase0" 2>/dev/null && pwd)"
+if [[ -n $harness && -d $harness/lrb_harness ]]; then
+  say ""
+  say "== Speed: software rendering against the GPU (one run each, real display)"
+  (cd "$harness" && python3 -m lrb_harness run --display native --perf \
+     --configs lrb-lean-pressure,lrb-lean-gpu --binary "lrb=$dir/content_shell" \
+     --pages static,wikipedia,github,video --repeats 1 --settle 15 \
+     --out "$work/perf" > "$work/perf.log" 2>&1 &&
+   python3 -m lrb_harness report "$work/perf" | sed -n '/## Load time/,/## PSS by/p' | grep -v "^## PSS by") \
+    | tee -a "$report" || { say "speed test failed:"; tail -5 "$work/perf.log" | tee -a "$report"; }
+  say "(lrb-lean-pressure: software rendering; lrb-lean-gpu: the GPU)"
+else
+  say ""
+  say "== Speed: skipped (run this script from a clone of the repo to measure it)"
+fi
 
 rm -rf "$work"
 say ""

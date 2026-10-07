@@ -128,6 +128,72 @@ def stop(proc, cgroup):
         pass
 
 
+# Smoothness (--perf): a 3 s smooth scroll driven by requestAnimationFrame,
+# timing every frame. At 60 Hz a frame is 16.7 ms; one over 25 ms missed at
+# least one refresh (jank). Meaningful on a real display (--display native):
+# headless frames aren't paced by a screen.
+SCROLL_PERF_JS = """
+new Promise(resolve => {
+  window.scrollTo(0, 0);
+  const times = [];
+  let last = null;
+  const end = performance.now() + 3000;
+  function frame(now) {
+    if (last !== null) times.push(now - last);
+    last = now;
+    window.scrollBy(0, 6);
+    if (now < end) { requestAnimationFrame(frame); return; }
+    times.sort((a, b) => a - b);
+    const total = times.reduce((a, b) => a + b, 0);
+    resolve({frames: times.length,
+             fps: times.length ? 1000 * times.length / total : 0,
+             jank_percent: times.length ? 100 * times.filter(t => t > 25).length / times.length : 0,
+             p95_ms: times.length ? times[Math.floor(times.length * 0.95)] : 0});
+  }
+  requestAnimationFrame(frame);
+})
+"""
+
+# Video (--perf, pages with a <video>): plays the first video muted for 10 s
+# (started as if clicked: lrb's policy blocks autoplay) and reads the
+# browser's own counters.
+VIDEO_PERF_JS = """
+(async () => {
+  const v = document.querySelector('video');
+  if (!v) return null;
+  v.muted = true;
+  try { await v.play(); } catch (e) { return {error: String(e)}; }
+  const q0 = v.getVideoPlaybackQuality();
+  await new Promise(r => setTimeout(r, 10000));
+  const q1 = v.getVideoPlaybackQuality();
+  const total = q1.totalVideoFrames - q0.totalVideoFrames;
+  const dropped = q1.droppedVideoFrames - q0.droppedVideoFrames;
+  v.pause();
+  return {frames: total, fps: total / 10,
+          dropped_percent: total ? 100 * dropped / total : null,
+          height: v.videoHeight};
+})()
+"""
+
+
+def measure_perf(client, session):
+    perf = {}
+    try:
+        perf["scroll"] = client.evaluate(session, SCROLL_PERF_JS, await_promise=True)
+    except cdplib.CDPError as e:
+        perf["scroll_error"] = str(e)
+    try:
+        reply = client.call("Runtime.evaluate", {
+            "expression": VIDEO_PERF_JS, "awaitPromise": True, "returnByValue": True,
+            "userGesture": True}, session)
+        value = reply.get("result", {}).get("value")
+        if value is not None:
+            perf["video"] = value
+    except Exception as e:  # noqa: BLE001 (a page without video is fine)
+        perf["video_error"] = str(e)
+    return perf
+
+
 def run_one(config, page, url, binary_path, opts, log_path):
     # Not /tmp: where /tmp is tmpfs the profile's disk caches would be RAM and
     # silently inflate the cgroup's shmem charge.
@@ -168,6 +234,8 @@ def run_one(config, page, url, binary_path, opts, log_path):
         sample = procmem.snapshot(proc.pid, cgroup)
         sample.update(page_metrics(client, session))
         record["samples"]["loaded"] = sample
+        if getattr(opts, "perf", False):
+            record["perf"] = measure_perf(client, session)
 
         # How much is reclaimable when the system asks: what the browser can
         # give back under memory pressure is as relevant as what it holds.

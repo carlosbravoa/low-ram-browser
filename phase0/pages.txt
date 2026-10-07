@@ -10,4 +10,5 @@ cnn          https://edition.cnn.com/
 reddit       https://www.reddit.com/r/linux/
 amazon       https://www.amazon.com/
 youtube      https://www.youtube.com/watch?v=aqz-KE-bpKQ
+video        file://pages/video.html
 maps         https://www.google.com/maps/@-33.4489,-70.6693,13z

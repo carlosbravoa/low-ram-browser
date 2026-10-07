@@ -86,6 +86,22 @@ def report(results_dir, sample="loaded", breakdown_page=None):
               "Highest cgroup charge during the run. Counts page cache only for files "
               "first read inside this run, so it understates the binary.")
 
+    if any(r.get("perf") for r in runs):
+        num = lambda v: f"{v:.1f}" if v is not None else "—"
+        table("Load time (s)", lambda s, r: r.get("load_seconds"),
+              "Navigation start to document complete.", fmt=num)
+        table("Scroll: frames per second",
+              lambda s, r: ((r.get("perf") or {}).get("scroll") or {}).get("fps"),
+              "A 3 s smooth scroll driven by requestAnimationFrame (--perf). "
+              "Meaningful on a real display.", fmt=num)
+        table("Scroll: janky frames (%)",
+              lambda s, r: ((r.get("perf") or {}).get("scroll") or {}).get("jank_percent"),
+              "Frames over 25 ms (at least one missed 60 Hz refresh).", fmt=num)
+        table("Video: dropped frames (%)",
+              lambda s, r: ((r.get("perf") or {}).get("video") or {}).get("dropped_percent"),
+              "10 s of the page's first video (720p on `video`), the browser's own "
+              "counters.", fmt=num)
+
     breakdown_page = breakdown_page or (
         "wikipedia" if "wikipedia" in pages else (pages[0] if pages else None))
     if breakdown_page:

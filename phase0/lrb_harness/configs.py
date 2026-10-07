@@ -119,6 +119,12 @@ CONFIGS["lrb-lean-adblock"] = dict(
 CONFIGS["lrb-lean-adblock-lean"] = dict(
     _LEAN, args=_LEAN["args"] + ["--lrb-adblock-file={adblock_dir}/lean.adb"])
 
+# The GPU against software compositing (the first-start question): the
+# lean config with the GPU (no --disable-gpu). Smoothness needs --perf and
+# --display native.
+CONFIGS["lrb-lean-gpu"] = dict(
+    _LEAN, args=[a for a in _LEAN["args"] if a != "--disable-gpu"])
+
 # With Chromium's field trial testing config (the testing group of every
 # experiment in testing/variations/fieldtrial_testing_config.json), as
 # lrb-lean-* measured before 2026-10-05.
