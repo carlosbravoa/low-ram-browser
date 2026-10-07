@@ -63,8 +63,11 @@ fixed budget. Targets: 2 GB x86-64 laptops (primary) and a 1 GB Raspberry Pi
     Downloads ask where to save.
 11. **Search:** DuckDuckGo's HTML page by default, changeable in the
     settings.
-12. **GPU:** software compositing by default (about 12 MB less per window
-    measured on one machine); the GPU is a setting.
+12. **GPU:** the user chooses. On first start, on a machine with a GPU,
+    lrb shows the memory trade-off (7-55 MB more per window on a
+    Raspberry Pi 3, about 12 MB on a desktop with NVIDIA) and asks,
+    suggesting neither: smoothness hasn't been measured yet. Changeable in
+    Settings. Unanswered (or without a display), software rendering.
 13. **Chromium release line:** Stable (what Linux distributions ship),
     rebuilt for each security release; never main or canary.
     `build/update_stable.sh` automates it, including a memory comparison

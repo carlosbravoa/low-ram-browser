@@ -35,6 +35,40 @@ sandbox isn't built yet. Until it is, don't use lrb for accounts that matter.
 - **A native slim bar** (Views, about 2 MB per window) rather than an HTML
   one.
 
+## On a Raspberry Pi 3 (1 GB)
+
+A Raspberry Pi 3 Model B+ (905 MB usable, 905 MB zram, Debian 13 64-bit)
+running the arm64 alpha with `tools/device_test.sh`. Memory that can't be
+paged out (anonymous + shared), MB, one site at a time without content
+blocking:
+
+| page | software rendering | GPU |
+|---|---:|---:|
+| blank | 32 | 39 |
+| Wikipedia | 86 | 93 |
+| GitHub | 105 | 125 |
+| Reddit | 123 | 134 |
+| BBC News | 155 | 161 |
+| YouTube | 254 | 309 |
+
+Five sites opened one after another through `lrb_coordinator`, content
+blocking on:
+
+| sites open | lrb | free memory |
+|---|---:|---:|
+| 1 | 87 MB | 546 MB |
+| 2 | 169 MB | 422 MB |
+| 3 | 285 MB | 302 MB |
+| 4 | 277 MB | 311 MB |
+| 5 | 325 MB | 242 MB |
+
+Memory pressure began at the third site; the coordinator put the least
+recently used windows to sleep, so five open sites cost about what three
+did. Every site loaded, nothing crashed, and the kernel killed nothing.
+Not measured yet: load times and how smooth scrolling and video are with
+and without the GPU. More numbers, and how to reproduce them:
+[MEASUREMENTS.md](MEASUREMENTS.md).
+
 ## Safety and privacy defaults
 
 - No permission without the user saying yes. Camera, microphone and

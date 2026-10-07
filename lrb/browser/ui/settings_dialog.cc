@@ -50,11 +50,12 @@ class SettingsView : public views::View {
       // the trade-off and ask; changeable later here.
       Heading(u"Welcome to lrb");
       Note(u"This computer has a graphics chip (GPU). lrb can draw pages "
-           u"with it, or without it in software. The GPU makes scrolling "
-           u"and video smoother but costs memory in every window: measured "
-           u"7 to 55 MB more per window on a Raspberry Pi 3, about 12 MB on "
-           u"a desktop with NVIDIA graphics. With little memory, software is "
-           u"the better choice. You can change this later in Settings.");
+           u"with it, or without it in software. The GPU costs memory in "
+           u"every window: measured 7 to 55 MB more per window on a "
+           u"Raspberry Pi 3, about 12 MB on a desktop with NVIDIA graphics. "
+           u"How much smoother it makes scrolling and video hasn't been "
+           u"measured yet. Choose one below; you can change it later in "
+           u"Settings.");
     }
 
     Heading(u"Search engine");
@@ -90,7 +91,11 @@ class SettingsView : public views::View {
     gpu_ = AddChildView(std::make_unique<views::RadioButton>(
         u"Use the GPU: smoother scrolling and video, more memory per window",
         /*group_id=*/1));
-    (settings.gpu.value_or(false) ? gpu_ : software_)->SetChecked(true);
+    // The first start asks without suggesting an answer: neither is
+    // chosen until the user picks one (memory is measured, smoothness not).
+    if (!first_start) {
+      (settings.gpu.value_or(false) ? gpu_ : software_)->SetChecked(true);
+    }
     Note(u"Without the GPU, pages can't use WebGL (3-D graphics: some maps, "
          u"games and visualizations). Applies to windows opened from now "
          u"on.");
@@ -126,6 +131,10 @@ class SettingsView : public views::View {
       settings.search_url = url;
     } else {
       settings.search_url = SearchEngines()[index].url;
+    }
+    if (first_start_ && !software_->GetChecked() && !gpu_->GetChecked()) {
+      software_->RequestFocus();  // the question needs an answer
+      return false;
     }
     // Rendering left as it was, never chosen: still unset (the first-start
     // question asks then). Answering that question sets it either way.
