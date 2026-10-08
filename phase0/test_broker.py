@@ -82,6 +82,12 @@ def main():
         failures += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f": {detail}" if detail else ""))
 
+    # A copy left by a coordinator that was killed (SIGKILL, a crash).
+    stale = os.path.join(profiles, "127.0.0.1", "uploads", "1", "old.txt")
+    os.makedirs(os.path.dirname(stale))
+    with open(stale, "w") as f:
+        f.write("an earlier upload")
+
     log = open(os.path.join(work, "coordinator.log"), "w")
     env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS="disabled:")
     coordinator = subprocess.Popen(
@@ -92,6 +98,8 @@ def main():
     try:
         site = wait_for(lambda: "127.0.0.1" in instances(profiles), 30)
         check("the page's instance started", bool(site))
+        check("copies left by a killed coordinator are deleted",
+              not os.path.exists(stale))
         pid = instances(profiles)["127.0.0.1"][0]
         with open(f"/proc/{pid}/status") as f:
             status = f.read()
@@ -120,7 +128,8 @@ def main():
         coordinator.wait(10)
         server.shutdown()
     uploads = os.path.join(profiles, "127.0.0.1", "uploads")
-    check("upload copies are deleted when the instance exits", not os.path.exists(uploads))
+    check("upload copies are deleted when the coordinator is stopped (SIGTERM)",
+          not os.path.exists(uploads))
     print(f"{failures} failure(s)")
     if not failures:
         shutil.rmtree(work, ignore_errors=True)

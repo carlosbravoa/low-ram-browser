@@ -58,7 +58,7 @@ rm -rf dist/x64 && mkdir -p dist/x64 &&
 note "x64 builds"
 
 phase0/run_tests.sh > "$out/tests.log" 2>&1
-grep -E '^== ' "$out/tests.log" | grep -v ': 0 failure' > "$out/tests-failed" || true
+grep -E '^== ' "$out/tests.log" | grep -vE ' 0 failure\(s\) *$' > "$out/tests-failed" || true
 if [[ -s $out/tests-failed ]]; then
   note "tests failing:"; cat "$out/tests-failed" | tee -a "$summary"; fail "tests"
 fi

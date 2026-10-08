@@ -137,6 +137,27 @@ struct Options {
 
 using Clock = std::chrono::steady_clock;
 
+// Set by SIGTERM, SIGINT or SIGHUP (logout, Ctrl+C, a closed terminal).
+volatile sig_atomic_t g_stop_signal = 0;
+
+void OnStopSignal(int number) {
+  g_stop_signal = number;
+}
+
+// No SA_RESTART: the signal interrupts poll(), so the loop sees it at once.
+void CatchStopSignals() {
+  struct sigaction action = {};
+  action.sa_handler = OnStopSignal;
+  sigemptyset(&action.sa_mask);
+  for (int number : {SIGTERM, SIGINT, SIGHUP}) {
+    sigaction(number, &action, nullptr);
+  }
+}
+
+// How long instances get to exit after a stop signal before the
+// coordinator leaves without them.
+constexpr auto kStopGrace = std::chrono::seconds(5);
+
 // stderr line with seconds since start, so events line up with instances'
 // and harness logs.
 __attribute__((format(printf, 1, 2))) void Log(const char* format, ...) {
@@ -400,7 +421,12 @@ class Coordinator {
     MaybeAskAboutGpu();
     WaitForFirstEngine();
     Launch(/*site=*/"", options_.url);
+    CatchStopSignals();
     while (children_ > 0 || !clients_.empty()) {
+      if (g_stop_signal) {
+        Stop();
+        break;
+      }
       PollOnce();
       Reap();
       CheckPressure();
@@ -935,6 +961,10 @@ class Coordinator {
   pid_t Spawn(std::vector<std::string> args,
               const std::string& rw_dir,
               bool settings_writer = false) {
+    if (ProfileUnused(rw_dir)) {
+      // Left by a coordinator that was killed or crashed.
+      coordinator::FileBroker::CleanProfile(rw_dir);
+    }
     const pid_t pid = fork();
     if (pid == 0) {
       if (options_.confine) {
@@ -970,6 +1000,31 @@ class Coordinator {
     return pid;
   }
 
+  // A stop signal: the instances stop too, and are reaped so their staged
+  // copies of the user's files are deleted (Reap), not left in profiles.
+  void Stop() {
+    Log("signal %d: stopping %zu instance(s)", static_cast<int>(g_stop_signal),
+        child_profiles_.size());
+    for (const auto& [pid, profile] : child_profiles_) {
+      kill(pid, SIGTERM);
+    }
+    const auto deadline = Clock::now() + kStopGrace;
+    while (!child_profiles_.empty() && Clock::now() < deadline) {
+      poll(nullptr, 0, 100);
+      Reap();
+    }
+    for (const auto& [pid, profile] : child_profiles_) {
+      Log("instance %d didn't stop", pid);
+    }
+  }
+
+  // No other instance runs on `profile`.
+  bool ProfileUnused(const std::string& profile) const {
+    return std::ranges::none_of(child_profiles_, [&](const auto& child) {
+      return child.second == profile;
+    });
+  }
+
   void Reap() {
     pid_t pid;
     int status = 0;
@@ -981,8 +1036,11 @@ class Coordinator {
       if (profile == child_profiles_.end()) {
         continue;  // not ours to count (the file manager for show-saved)
       }
-      coordinator::FileBroker::CleanProfile(profile->second);
+      const std::string rw_dir = std::move(profile->second);
       child_profiles_.erase(profile);
+      if (ProfileUnused(rw_dir)) {
+        coordinator::FileBroker::CleanProfile(rw_dir);
+      }
       if (pid == updater_pid_) {
         updater_pid_ = 0;
         Log("filter-list update finished");
