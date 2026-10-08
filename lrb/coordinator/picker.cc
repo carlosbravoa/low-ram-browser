@@ -15,6 +15,12 @@
 // HANDLE is the portal's parent window identifier ("x11:<hex>",
 // "wayland:<handle>"), so the dialog stays on top of the page's window.
 
+// C glue (argv, GLib's string arrays) with no //base for spans: this file
+// opts out of Chromium's unsafe-buffer checks (docs/unsafe_buffers.md).
+#ifdef UNSAFE_BUFFERS_BUILD
+#pragma allow_unsafe_buffers
+#endif
+
 #include <gio/gio.h>
 #include <stdio.h>
 #include <string.h>

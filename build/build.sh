@@ -53,7 +53,7 @@ mkdir -p "$out"
 # targets that assert enable_pdf and enable_mdns, so args.gn could not drop
 # those features otherwise.
 gn gen "$out" --root-target=//lrb --root-pattern=//lrb:all
-autoninja -C "$out" lrb lrb_coordinator lrb_unittests content_shell
+autoninja -C "$out" lrb lrb_coordinator lrb_picker lrb_unittests content_shell
 if [[ $variant == dev ]]; then
   echo "dev build ready: $work/src/$out/lrb (and content_shell)"
   exit 0
