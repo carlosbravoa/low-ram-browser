@@ -98,6 +98,34 @@ and without the GPU. More numbers, and how to reproduce them:
 - No remote-debugging server unless explicitly asked for.
 - Origin trials use Chromium's production key.
 
+## Everyday use
+
+- **Picks up where you left off.** Started from the applications menu, lrb
+  opens the site you used last (Settings: or an empty window, or a page of
+  your choice). A site's windows are saved as you browse, so after a
+  crash, a power cut or a logout they come back with their history the
+  next time you open the site. Closing a site's windows yourself forgets
+  them. What's saved stays in that site's profile on disk: its pages'
+  addresses, titles and form contents.
+- **Shortcuts:**
+
+  | Keys | Does |
+  |---|---|
+  | Ctrl+T, Ctrl+N | New tab, new window (of the same site) |
+  | Ctrl+W, middle-click on a tab | Close the tab |
+  | Ctrl+Shift+T | Reopen the last closed tab, with its history |
+  | Ctrl+Tab, Ctrl+1...9 | Switch tabs |
+  | Ctrl+L, Alt+D, F6 | Edit the address |
+  | Alt+Left, Alt+Right, Alt+Home | Back, forward, the site's home page |
+  | F5, Ctrl+R, Esc | Reload, stop loading |
+  | Ctrl+F, Ctrl+Plus/Minus/0 | Find, zoom (remembered per site) |
+  | F11, Alt+F | Full screen, the menu |
+
+- **Settings** (in the menu): search engine, GPU or software rendering,
+  what to open on start, and how much content blocking (full lists,
+  lighter ones for less memory, or off; the menu also turns it off for
+  one site).
+
 ## Download
 
 Pre-releases for 64-bit x86 and ARM Linux (a Raspberry Pi with the 64-bit

@@ -26,6 +26,16 @@ struct Settings {
   // GPU (true) or software rendering (false); unset: never chosen
   // (software, the leaner, until the user chooses).
   std::optional<bool> gpu;
+  // What lrb opens when started without an address (the applications
+  // menu): the site last used (its windows as they were, if it was closed
+  // by a crash or logout), an empty window, or `startup_page`.
+  enum class Startup { kLastSite, kBlank, kPage };
+  Startup startup = Startup::kLastSite;
+  std::string startup_page;  // http(s), for kPage
+  // Content blocking level: "full", "lean", "off"; empty: by memory
+  // (lean below 1.5 GB of RAM). The coordinator applies it; its
+  // --adblock-setting overrides it.
+  std::string content_blocking;
 
   // Blocking: reads and writes the file. Read() parses no URLs: it runs
   // at startup, before URL schemes are registered.

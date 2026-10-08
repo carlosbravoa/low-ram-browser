@@ -110,7 +110,12 @@ def main():
         check("...in one window, only the shown tab loaded (the other loads when shown), "
               "not a duplicate for the same page",
               len(restored) == 1, f"{len(restored)} page(s) loaded")
-        check("the saved state is used once", not os.path.exists(saved))
+        # The saved state then follows the windows open (the session,
+        # saved_windows.h): restored, it is saved again as it is now.
+        current = before[before_index]
+        check("after restoring, the saved state follows the open windows",
+              wait_for(lambda: os.path.exists(saved) and current in open(saved).read(), 10),
+              f"{saved}: {'there' if os.path.exists(saved) else 'missing'}")
     finally:
         for pids in instances(profiles).values():
             for pid in pids:

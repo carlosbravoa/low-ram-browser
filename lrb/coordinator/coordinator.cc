@@ -51,6 +51,11 @@
 //                            "close"              save your windows' history
 //                                                 and exit (last resort)
 //
+// Started without an address (the applications menu), it opens what the
+// settings say: the site last used (default; recorded in
+// <profiles-dir>/.last-site, its windows restored as they were), an empty
+// window, or a page.
+//
 // Content blocking: windows get --lrb-adblock-file once the engine file
 // exists ($XDG_DATA_HOME/lrb/adblock/<setting>.adb). When it is missing or
 // over a day old, the coordinator runs `lrb --lrb-update-lists` (no window)
@@ -115,6 +120,7 @@ struct OpenOptions {
   std::string bounds;
   std::string back;
   bool restore = false;
+  bool resume = false;  // lrb started on the last site: its windows as were
 };
 
 
@@ -129,6 +135,10 @@ struct Options {
   bool verbose = false;
   std::string adblock_setting;  // "full", "lean", "off"; empty: by RAM
   std::string adblock_file;
+  // Given on the command line: the settings' level doesn't apply.
+  bool adblock_setting_given = false;
+  bool adblock_file_given = false;
+  std::string data_home;
   int moderate_percent = 30;
   int critical_percent = 15;
   bool confine = true;
@@ -282,6 +292,35 @@ coordinator::ConfinePolicy InstancePolicy(const Options& options,
   return policy;
 }
 
+// lrb's settings file ($XDG_CONFIG_HOME/lrb/settings.json), empty if none.
+// Written by the settings window's process only (lrb/common/settings.h).
+std::string ReadSettings() {
+  const std::string config = Getenv("XDG_CONFIG_HOME").empty()
+                                 ? Getenv("HOME") + "/.config"
+                                 : Getenv("XDG_CONFIG_HOME");
+  std::string settings;
+  if (FILE* file = fopen((config + "/lrb/settings.json").c_str(), "r")) {
+    char buffer[65536];
+    settings.assign(buffer, fread(buffer, 1, sizeof(buffer), file));
+    fclose(file);
+  }
+  return settings;
+}
+
+// The content blocking level: the settings' choice, else by memory (lean
+// below 1.5 GB of RAM).
+std::string AdblockLevel() {
+  const std::optional<std::string> chosen =
+      JsonString(ReadSettings(), "content_blocking");
+  if (chosen && (*chosen == "full" || *chosen == "lean" || *chosen == "off")) {
+    return *chosen;
+  }
+  struct sysinfo info = {};
+  const uint64_t ram =
+      sysinfo(&info) == 0 ? uint64_t{info.totalram} * info.mem_unit : 0;
+  return ram && ram < uint64_t{1536} * 1024 * 1024 ? "lean" : "full";
+}
+
 bool ParseOptions(int argc, char** argv, Options& options) {
   std::string self = argv[0];
   options.browser = DirName(self) + "/lrb";
@@ -289,6 +328,7 @@ bool ParseOptions(int argc, char** argv, Options& options) {
                                     ? Getenv("XDG_DATA_HOME")
                                     : Getenv("HOME") + "/.local/share";
   options.profiles_dir = data_home + "/lrb/sites";
+  options.data_home = data_home;
   const std::string runtime = !Getenv("XDG_RUNTIME_DIR").empty()
                                   ? Getenv("XDG_RUNTIME_DIR")
                                   : "/tmp/lrb-" + std::to_string(getuid());
@@ -308,8 +348,10 @@ bool ParseOptions(int argc, char** argv, Options& options) {
       options.socket_path = arg.substr(9);
     } else if (arg.starts_with("--adblock-setting=")) {
       options.adblock_setting = arg.substr(18);
+      options.adblock_setting_given = true;
     } else if (arg.starts_with("--adblock-file=")) {
       options.adblock_file = arg.substr(15);
+      options.adblock_file_given = true;
     } else if (arg == "--verbose") {
       options.verbose = true;
     } else if (arg == "--no-confine") {
@@ -328,11 +370,7 @@ bool ParseOptions(int argc, char** argv, Options& options) {
     }
   }
   if (options.adblock_setting.empty()) {
-    struct sysinfo info = {};
-    const uint64_t ram =
-        sysinfo(&info) == 0 ? uint64_t{info.totalram} * info.mem_unit : 0;
-    options.adblock_setting =
-        ram && ram < uint64_t{1536} * 1024 * 1024 ? "lean" : "full";
+    options.adblock_setting = AdblockLevel();
   }
   if (options.adblock_setting != "full" && options.adblock_setting != "lean" &&
       options.adblock_setting != "off") {
@@ -429,6 +467,8 @@ class Coordinator {
  public:
   explicit Coordinator(Options options)
       : options_(std::move(options)),
+        adblock_setting_(options_.adblock_setting),
+        adblock_file_(options_.adblock_file),
         broker_(options_.picker.empty()
                     ? DirName(options_.browser) + "/lrb_picker"
                     : options_.picker,
@@ -447,7 +487,7 @@ class Coordinator {
     MaybeUpdateLists();
     MaybeAskAboutGpu();
     WaitForFirstEngine();
-    Launch(/*site=*/"", options_.url);
+    LaunchFirst();
     CatchStopSignals();
     while (children_ > 0 || !clients_.empty()) {
       if (g_stop_signal) {
@@ -568,6 +608,7 @@ class Coordinator {
     } else if (command == "active") {
       const bool reloading = client.discarded;
       client.last_active = Clock::now();
+      RecordLastSite(client.site);
       client.discarded = false;
       if (reloading) {
         MakeRoom(&client);  // its page is coming back
@@ -582,6 +623,7 @@ class Coordinator {
           // Launched because the user opened this site: it's in use now.
           client.last_active = Clock::now();
           wanted_site_.clear();
+          RecordLastSite(client.site);
         }
       }
     } else if (command == "open") {
@@ -625,6 +667,7 @@ class Coordinator {
   void Open(const std::string& site,
             const std::string& url,
             const OpenOptions& open) {
+    site_urls_[site] = url;
     for (auto& [fd, client] : clients_) {
       if (client.site == site && !client.closing) {
         const bool reloading = client.discarded;
@@ -675,9 +718,9 @@ class Coordinator {
       args.push_back("--user-data-dir=" + profile);
     }
     struct stat engine = {};
-    if (options_.adblock_setting != "off" &&
-        stat(options_.adblock_file.c_str(), &engine) == 0) {
-      args.push_back("--lrb-adblock-file=" + options_.adblock_file);
+    if (adblock_setting_ != "off" &&
+        stat(adblock_file_.c_str(), &engine) == 0) {
+      args.push_back("--lrb-adblock-file=" + adblock_file_);
     }
     for (const std::string& arg : options_.browser_args) {
       args.push_back(arg);
@@ -690,6 +733,9 @@ class Coordinator {
     }
     if (open.restore) {
       args.push_back("--lrb-restore-left");
+    }
+    if (open.resume) {
+      args.push_back("--lrb-resume");
     }
     if (!url.empty()) {
       args.push_back(url);
@@ -870,7 +916,7 @@ class Coordinator {
   // Runs the filter-list updater when the engine file is missing or older
   // than a day; checked at most hourly, one updater at a time.
   void MaybeUpdateLists() {
-    if (options_.adblock_setting == "off" || updater_pid_ > 0) {
+    if (adblock_setting_ == "off" || updater_pid_ > 0) {
       return;
     }
     const Clock::time_point now = Clock::now();
@@ -880,24 +926,24 @@ class Coordinator {
     }
     last_update_check_ = now;
     struct stat engine = {};
-    if (stat(options_.adblock_file.c_str(), &engine) == 0 &&
+    if (stat(adblock_file_.c_str(), &engine) == 0 &&
         time(nullptr) - engine.st_mtime < 24 * 3600) {
       return;
     }
-    const size_t slash = options_.adblock_file.rfind('/');
-    const std::string dir = options_.adblock_file.substr(0, slash);
+    const size_t slash = adblock_file_.rfind('/');
+    const std::string dir = adblock_file_.substr(0, slash);
     MakeDirs(dir + "/updater-profile", 0700);
     std::vector<std::string> args = {
-        options_.browser, "--lrb-update-lists=" + options_.adblock_file,
-        "--lrb-adblock-setting=" + options_.adblock_setting,
+        options_.browser, "--lrb-update-lists=" + adblock_file_,
+        "--lrb-adblock-setting=" + adblock_setting_,
         "--user-data-dir=" + dir + "/updater-profile"};
     for (const std::string& arg : options_.browser_args) {
       if (!arg.starts_with("--remote-debugging")) {
         args.push_back(arg);
       }
     }
-    Log("updating filter lists (%s) into %s", options_.adblock_setting.c_str(),
-        options_.adblock_file.c_str());
+    Log("updating filter lists (%s) into %s", adblock_setting_.c_str(),
+        adblock_file_.c_str());
     updater_pid_ = Spawn(args, dir);
   }
 
@@ -906,7 +952,7 @@ class Coordinator {
   // the background while windows use the previous file.
   void WaitForFirstEngine() {
     struct stat engine = {};
-    if (updater_pid_ <= 0 || stat(options_.adblock_file.c_str(), &engine) == 0) {
+    if (updater_pid_ <= 0 || stat(adblock_file_.c_str(), &engine) == 0) {
       return;
     }
     const Clock::time_point deadline = Clock::now() + std::chrono::seconds(15);
@@ -1056,6 +1102,107 @@ class Coordinator {
     });
   }
 
+  // The first window: the address given, else what the settings say to
+  // start with (lrb/common/settings.h): the site last used, with its
+  // windows as they were (default), an empty window, or a page.
+  void LaunchFirst() {
+    if (!options_.url.empty()) {
+      Launch(/*site=*/"", options_.url);
+      return;
+    }
+    const std::string settings = ReadSettings();
+    const std::string startup =
+        JsonString(settings, "startup").value_or("last-site");
+    if (startup == "page") {
+      const std::optional<std::string> page =
+          JsonString(settings, "startup_page");
+      if (page && IsAcceptableUrl(*page)) {
+        Launch(/*site=*/"", *page);
+        return;
+      }
+    } else if (startup != "blank") {
+      std::string site;
+      std::string url;
+      if (ReadLastSite(&site, &url)) {
+        Log("starting on the last site, %s", site.c_str());
+        OpenOptions open;
+        open.resume = true;
+        Open(site, url, open);
+        return;
+      }
+    }
+    Launch(/*site=*/"", "");
+  }
+
+  std::string LastSitePath() const {
+    return options_.profiles_dir + "/.last-site";
+  }
+
+  // The site in use, and the address that opened it ("<site> <url>"), for
+  // starting there next time. Written when the site in use changes.
+  void RecordLastSite(const std::string& site) {
+    if (site.empty() || site == last_site_written_) {
+      return;
+    }
+    last_site_written_ = site;
+    auto known = site_urls_.find(site);
+    const std::string url = known != site_urls_.end()
+                                ? known->second
+                                : "https://" + site + "/";
+    const std::string path = LastSitePath();
+    const std::string temp = path + ".new";
+    if (FILE* file = fopen(temp.c_str(), "w")) {
+      const std::string line = site + " " + url + "\n";
+      const bool ok = fwrite(line.data(), 1, line.size(), file) == line.size();
+      if (fclose(file) == 0 && ok) {
+        rename(temp.c_str(), path.c_str());
+      }
+    }
+  }
+
+  bool ReadLastSite(std::string* site, std::string* url) const {
+    char buffer[9000] = {};
+    FILE* file = fopen(LastSitePath().c_str(), "r");
+    if (!file) {
+      return false;
+    }
+    std::string line(buffer, fread(buffer, 1, sizeof(buffer) - 1, file));
+    fclose(file);
+    if (!line.empty() && line.back() == '\n') {
+      line.pop_back();
+    }
+    const size_t space = line.find(' ');
+    *site = line.substr(0, space);
+    if (!IsValidSite(*site)) {
+      return false;
+    }
+    *url = space == std::string::npos ? "" : line.substr(space + 1);
+    if (!IsAcceptableUrl(*url) || !UrlBelongsToSite(*url, *site)) {
+      *url = "https://" + *site + "/";
+    }
+    return true;
+  }
+
+  // The content blocking level from the settings (unless given on the
+  // command line): windows opened from now on get it.
+  void ApplyAdblockSetting() {
+    if (options_.adblock_setting_given) {
+      return;
+    }
+    const std::string level = AdblockLevel();
+    if (level == adblock_setting_) {
+      return;
+    }
+    Log("content blocking: %s (was %s)", level.c_str(),
+        adblock_setting_.c_str());
+    adblock_setting_ = level;
+    if (!options_.adblock_file_given) {
+      adblock_file_ = options_.data_home + "/lrb/adblock/" + level + ".adb";
+    }
+    last_update_check_ = Clock::time_point();  // fetch its lists if missing
+    MaybeUpdateLists();
+  }
+
   void Reap() {
     pid_t pid;
     int status = 0;
@@ -1077,6 +1224,7 @@ class Coordinator {
         Log("filter-list update finished");
       } else if (pid == settings_pid_) {
         settings_pid_ = 0;
+        ApplyAdblockSetting();  // the user may have changed it
       } else {
         --children_;
       }
@@ -1084,6 +1232,13 @@ class Coordinator {
   }
 
   const Options options_;
+  // Content blocking: options_' level, or the settings' once changed there.
+  std::string adblock_setting_;
+  std::string adblock_file_;
+  // The address each site was last opened with, and the site last recorded
+  // as in use (RecordLastSite).
+  std::map<std::string, std::string> site_urls_;
+  std::string last_site_written_;
   int listen_fd_ = -1;
   int children_ = 0;
   std::map<int, Client> clients_;

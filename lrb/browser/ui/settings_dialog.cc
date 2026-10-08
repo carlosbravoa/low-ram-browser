@@ -4,6 +4,8 @@
 
 #include "lrb/browser/ui/settings_dialog.h"
 
+#include <algorithm>
+#include <array>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -28,6 +30,7 @@
 #include "ui/views/style/typography.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "url/gurl.h"
 
 namespace lrb {
 
@@ -99,6 +102,51 @@ class SettingsView : public views::View {
     Note(u"Without the GPU, pages can't use WebGL (3-D graphics: some maps, "
          u"games and visualizations). Applies to windows opened from now "
          u"on.");
+
+    Heading(u"On start");
+    last_site_ = AddChildView(std::make_unique<views::RadioButton>(
+        u"Open the site I used last", /*group_id=*/2));
+    blank_ = AddChildView(std::make_unique<views::RadioButton>(
+        u"Open an empty window", /*group_id=*/2));
+    page_ = AddChildView(std::make_unique<views::RadioButton>(
+        u"Open this page:", /*group_id=*/2));
+    switch (settings.startup) {
+      case Settings::Startup::kLastSite:
+        last_site_->SetChecked(true);
+        break;
+      case Settings::Startup::kBlank:
+        blank_->SetChecked(true);
+        break;
+      case Settings::Startup::kPage:
+        page_->SetChecked(true);
+        break;
+    }
+    startup_page_ = AddChildView(std::make_unique<views::Textfield>());
+    startup_page_->GetViewAccessibility().SetName(u"Start page");
+    startup_page_->SetPlaceholderText(u"https://example.com/");
+    startup_page_->SetText(base::UTF8ToUTF16(settings.startup_page));
+    Note(u"When lrb starts from the applications menu. A link from another "
+         u"program opens that link instead.");
+
+    Heading(u"Content blocking");
+    blocking_model_ = std::make_unique<ui::SimpleComboboxModel>(
+        std::vector<ui::SimpleComboboxModel::Item>{
+            ui::SimpleComboboxModel::Item(
+                u"Automatic (by this computer's memory)"),
+            ui::SimpleComboboxModel::Item(u"Full lists"),
+            ui::SimpleComboboxModel::Item(u"Lighter lists (less memory)"),
+            ui::SimpleComboboxModel::Item(u"Off")});
+    blocking_ = AddChildView(
+        std::make_unique<views::Combobox>(blocking_model_.get()));
+    blocking_->GetViewAccessibility().SetName(u"Content blocking");
+    blocking_->SetSelectedIndex(
+        settings.content_blocking == "full"   ? 1
+        : settings.content_blocking == "lean" ? 2
+        : settings.content_blocking == "off"  ? 3
+                                              : 0);
+    Note(u"Ads and trackers, blocked with community lists (as uBlock Origin). "
+         u"Applies to windows opened from now on; the menu turns it off for "
+         u"one site.");
   }
 
   void Heading(const std::u16string& text) {
@@ -141,6 +189,27 @@ class SettingsView : public views::View {
     if (first_start_ || gpu_->GetChecked() || settings_.gpu) {
       settings.gpu = gpu_->GetChecked();
     }
+    const std::string page = base::UTF16ToUTF8(startup_page_->GetText());
+    if (page_->GetChecked()) {
+      const GURL url(page);
+      if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
+        startup_page_->SetInvalid(true);
+        startup_page_->RequestFocus();
+        return false;
+      }
+      settings.startup = Settings::Startup::kPage;
+      settings.startup_page = url.spec();
+    } else {
+      settings.startup = blank_->GetChecked() ? Settings::Startup::kBlank
+                                              : Settings::Startup::kLastSite;
+      const GURL url(page);
+      settings.startup_page =
+          url.is_valid() && url.SchemeIsHTTPOrHTTPS() ? url.spec() : "";
+    }
+    static constexpr std::array<const char*, 4> kLevels = {"", "full",
+                                                           "lean", "off"};
+    settings.content_blocking = kLevels[std::min<size_t>(
+        blocking_->GetSelectedIndex().value_or(0), kLevels.size() - 1)];
     base::ThreadPool::PostTask(
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
@@ -167,6 +236,12 @@ class SettingsView : public views::View {
   raw_ptr<views::Label> custom_hint_ = nullptr;
   raw_ptr<views::RadioButton> software_ = nullptr;
   raw_ptr<views::RadioButton> gpu_ = nullptr;
+  raw_ptr<views::RadioButton> last_site_ = nullptr;
+  raw_ptr<views::RadioButton> blank_ = nullptr;
+  raw_ptr<views::RadioButton> page_ = nullptr;
+  raw_ptr<views::Textfield> startup_page_ = nullptr;
+  std::unique_ptr<ui::SimpleComboboxModel> blocking_model_;
+  raw_ptr<views::Combobox> blocking_ = nullptr;
 };
 
 BEGIN_METADATA(SettingsView)

@@ -46,6 +46,10 @@ inline constexpr char kBackUrl[] = "lrb-back-url";
 // history) instead of opening a fresh page.
 inline constexpr char kRestoreLeft[] = "lrb-restore-left";
 
+// Started on the last site used (the coordinator, with no address to
+// open): the site's saved windows are the start; its URL only if none.
+inline constexpr char kResume[] = "lrb-resume";
+
 // Opt out of lrb's defaults (lrb_main_delegate.cc): Chromium's usual
 // processes (for debugging), the GPU (to compare per device).
 inline constexpr char kMultiProcess[] = "lrb-multi-process";

@@ -221,6 +221,7 @@ WindowView::WindowView(TabActions actions) : actions_(std::move(actions)) {
   SetBackground(views::CreateSolidBackground(ui::kColorWindowBackground));
 
   auto* bar = AddChildView(std::make_unique<views::View>());
+  bar_ = bar;
   // --content-shell-hide-toolbar: no bar (kiosks, and measuring the bar).
   const bool hidden = Shell::ShouldHideToolbar();
   bar->SetVisible(!hidden);
@@ -503,7 +504,9 @@ void WindowView::ClearPage() {
 void WindowView::SetTabs(const std::vector<std::u16string>& titles,
                          size_t active) {
   tab_row_->RemoveAllChildViews();
-  tab_row_->SetVisible(titles.size() > 1);
+  // Hidden in fullscreen (F11) too.
+  tab_row_->SetVisible(titles.size() > 1 &&
+                       !(GetWidget() && GetWidget()->IsFullscreen()));
   if (titles.size() <= 1) {
     InvalidateLayout();
     return;
@@ -523,8 +526,22 @@ void WindowView::SetTabs(const std::vector<std::u16string>& titles,
         views::FlexSpecification(views::LayoutOrientation::kHorizontal,
                                  views::MinimumFlexSizeRule::kScaleToMinimum,
                                  views::MaximumFlexSizeRule::kPreferred));
+    // A click shows the tab; a middle-click closes it.
     auto* title = tab->AddChildView(std::make_unique<views::LabelButton>(
-        base::BindRepeating(actions_.select, i), titles[i]));
+        base::BindRepeating(
+            [](const TabActions* actions, size_t index,
+               const ui::Event& event) {
+              if (event.IsMouseEvent() &&
+                  event.AsMouseEvent()->IsOnlyMiddleMouseButton()) {
+                actions->close.Run(index);
+              } else {
+                actions->select.Run(index);
+              }
+            },
+            base::Unretained(&actions_), i),
+        titles[i]));
+    title->SetTriggerableEventFlags(ui::EF_LEFT_MOUSE_BUTTON |
+                                    ui::EF_MIDDLE_MOUSE_BUTTON);
     title->SetMaxSize(gfx::Size(200, 0));
     title->SetElideBehavior(gfx::ELIDE_TAIL);
     title->SetTooltipText(titles[i]);
@@ -681,8 +698,25 @@ bool WindowView::HandleShortcut(const ui::KeyEvent& event) {
     actions_.select.Run(SIZE_MAX);  // the last tab
   } else if (ctrl && key == ui::VKEY_T) {
     NewPage();
+  } else if (mods == (ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN) &&
+             key == ui::VKEY_T) {
+    actions_.reopen_closed.Run();
+  } else if (ctrl && key == ui::VKEY_N) {
+    actions_.new_window.Run();
   } else if ((ctrl && key == ui::VKEY_W) || (ctrl && key == ui::VKEY_F4)) {
     CloseSoon();
+  } else if (!mods && key == ui::VKEY_F11) {
+    ToggleFullscreen();
+  } else if (alt && key == ui::VKEY_HOME) {
+    if (const GURL home = NewTabUrl(); home.SchemeIsHTTPOrHTTPS()) {
+      shell_->LoadURL(home);  // the site's home page
+    }
+  } else if (!mods && key == ui::VKEY_ESCAPE && loading_ && web_view_ &&
+             GetFocusManager() &&
+             GetFocusManager()->GetFocusedView() == web_view_) {
+    // Only while loading and with the page focused: in the address, the
+    // find row or a question (sign-in, a permission) Esc cancels those.
+    shell_->Stop();
   } else {
     return false;
   }
@@ -1091,7 +1125,11 @@ void WindowView::ShowMenu() {
   // each a way to forget it (the site asks again next time).
   menu_model_.Clear();
   menu_model_.AddItem(kNewPage, u"New tab");
+  menu_model_.AddItem(kNewWindow, u"New window");
   menu_model_.AddItem(kClosePage, u"Close tab");
+  if (LrbPlatformDelegate::CanReopenClosed()) {
+    menu_model_.AddItem(kReopenClosed, u"Reopen closed tab");
+  }
   forget_.clear();
   if (url_.SchemeIsHTTPOrHTTPS()) {
     LrbPermissionManager* permissions = static_cast<LrbPermissionManager*>(
@@ -1138,6 +1176,18 @@ void WindowView::NewPage() {
 
 gfx::Size WindowView::GetMinimumSize() const {
   return gfx::Size();  // windows may shrink below their first size
+}
+
+void WindowView::ToggleFullscreen() {
+  views::Widget* widget = GetWidget();
+  if (!widget) {
+    return;
+  }
+  const bool fullscreen = !widget->IsFullscreen();
+  widget->SetFullscreen(fullscreen);
+  bar_->SetVisible(!fullscreen && !Shell::ShouldHideToolbar());
+  tab_row_->SetVisible(!fullscreen && tab_row_->children().size() > 1);
+  InvalidateLayout();
 }
 
 void WindowView::CloseSoon() {
@@ -1260,6 +1310,12 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
     case kNewPage:
       NewPage();
       break;
+    case kNewWindow:
+      actions_.new_window.Run();
+      break;
+    case kReopenClosed:
+      actions_.reopen_closed.Run();
+      break;
     case kClosePage:
       CloseSoon();
       break;
@@ -1282,6 +1338,13 @@ bool WindowView::GetAcceleratorForCommandId(
       return true;
     case kClosePage:
       *accelerator = ui::Accelerator(ui::VKEY_W, ui::EF_CONTROL_DOWN);
+      return true;
+    case kNewWindow:
+      *accelerator = ui::Accelerator(ui::VKEY_N, ui::EF_CONTROL_DOWN);
+      return true;
+    case kReopenClosed:
+      *accelerator = ui::Accelerator(
+          ui::VKEY_T, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN);
       return true;
   }
   return false;

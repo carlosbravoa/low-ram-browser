@@ -21,7 +21,10 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/no_destructor.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/timer/timer.h"
 #include "base/values.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
@@ -30,6 +33,7 @@
 #include "content/public/browser/restore_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
+#include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/site_launcher.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
@@ -53,6 +57,29 @@ base::FilePath SavedPath(content::BrowserContext* browser_context) {
 
 base::FilePath LeftPath(content::BrowserContext* browser_context) {
   return browser_context->GetPath().Append(kLeftFileName);
+}
+
+bool g_keep_session = false;
+
+// Every write and delete of saved windows, in order: a late write can't
+// bring back a session just deleted. Finished before the process exits.
+scoped_refptr<base::SequencedTaskRunner> FileRunner() {
+  static base::NoDestructor<scoped_refptr<base::SequencedTaskRunner>> runner(
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
+  return *runner;
+}
+
+base::OneShotTimer& SessionTimer() {
+  static base::NoDestructor<base::OneShotTimer> timer;
+  return *timer;
+}
+
+// A site's own windows (not the resolver's, which only finds the site).
+bool HasSession(content::BrowserContext* browser_context) {
+  LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
+  return !g_keep_session && !browser_context->IsOffTheRecord() && client &&
+         !client->site().empty();
 }
 
 // One window's history, without about:blank entries (a discard's).
@@ -168,8 +195,8 @@ LrbPlatformDelegate::TabState TabFromHistory(const base::DictValue& history) {
 void Write(base::FilePath path, base::ListValue windows,
            base::OnceClosure done) {
   std::optional<std::string> json = base::WriteJson(windows);
-  base::ThreadPool::PostTaskAndReply(
-      FROM_HERE, {base::MayBlock()},
+  FileRunner()->PostTaskAndReply(
+      FROM_HERE,
       base::BindOnce(
           [](base::FilePath path, std::string json) {
             if (!base::CreateDirectory(path.DirName()) ||
@@ -183,6 +210,7 @@ void Write(base::FilePath path, base::ListValue windows,
 
 void OnSavedRead(content::BrowserContext* browser_context,
                  const GURL& startup_url,
+                 bool resume,
                  std::optional<std::string> json) {
   std::optional<base::ListValue> windows;
   if (json) {
@@ -224,6 +252,10 @@ void OnSavedRead(content::BrowserContext* browser_context,
   }
   // Reopening a closed site usually asks for the page it was showing: one
   // window for it, not two (at 384 MB the duplicate load sank the instance).
+  // Started on the last site: its windows as they were are the start.
+  if (resume && !Shell::windows().empty()) {
+    startup_url_shown = true;
+  }
   if (!startup_url_shown || Shell::windows().empty()) {
     Shell::CreateNewWindow(browser_context, startup_url, nullptr,
                                     gfx::Size());
@@ -231,6 +263,45 @@ void OnSavedRead(content::BrowserContext* browser_context,
 }
 
 }  // namespace
+
+void SessionChanged(content::BrowserContext* browser_context) {
+  if (!HasSession(browser_context)) {
+    return;
+  }
+  SessionTimer().Start(
+      FROM_HERE, base::Seconds(2),
+      base::BindOnce(
+          [](content::BrowserContext* browser_context) {
+            if (HasSession(browser_context) && !Shell::windows().empty()) {
+              SaveWindows(browser_context, base::DoNothing());
+            }
+          },
+          base::Unretained(browser_context)));
+}
+
+void SessionClosedByUser(content::BrowserContext* browser_context) {
+  SessionTimer().Stop();
+  if (HasSession(browser_context)) {
+    FileRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(base::IgnoreResult(&base::DeleteFile),
+                       SavedPath(browser_context)));
+  }
+}
+
+void KeepSession() {
+  SessionTimer().Stop();
+  g_keep_session = true;
+}
+
+base::DictValue SerializeTab(Shell* shell) {
+  return SerializeWindow(shell);
+}
+
+Shell* LoadSavedTab(content::BrowserContext* browser_context,
+                    const LrbPlatformDelegate::TabState& tab) {
+  return RestoreTab(browser_context, tab);
+}
 
 void SaveWindows(content::BrowserContext* browser_context,
                  base::OnceClosure done) {
@@ -281,9 +352,10 @@ void SaveLeftWindow(Shell* shell,
 
 void OpenStartupWindows(content::BrowserContext* browser_context,
                         const GURL& startup_url,
-                        bool restore_left) {
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock()},
+                        bool restore_left,
+                        bool resume) {
+  FileRunner()->PostTaskAndReplyWithResult(
+      FROM_HERE,
       base::BindOnce(
           [](base::FilePath saved, base::FilePath left,
              bool restore_left) -> std::optional<std::string> {
@@ -295,7 +367,11 @@ void OpenStartupWindows(content::BrowserContext* browser_context,
               }
               std::string json;
               if (base::ReadFileToString(path, &json)) {
-                base::DeleteFile(path);  // restored once
+                // The left window is restored once. The session stays: the
+                // instance keeps it current from here (SessionChanged).
+                if (path == left) {
+                  base::DeleteFile(path);
+                }
                 lists.push_back(std::move(json));
               }
             }
@@ -316,7 +392,7 @@ void OpenStartupWindows(content::BrowserContext* browser_context,
           },
           SavedPath(browser_context), LeftPath(browser_context),
           restore_left),
-      base::BindOnce(&OnSavedRead, browser_context, startup_url));
+      base::BindOnce(&OnSavedRead, browser_context, startup_url, resume));
 }
 
 }  // namespace lrb

@@ -5,6 +5,7 @@
 #ifndef LRB_BROWSER_UI_LRB_PLATFORM_DELEGATE_H_
 #define LRB_BROWSER_UI_LRB_PLATFORM_DELEGATE_H_
 
+#include <deque>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -121,6 +122,9 @@ class LrbPlatformDelegate : public views::WidgetObserver {
 
   // All tabs, live or not, in all windows (to know a site's last tab).
   static size_t TabCount();
+
+  // Whether a closed tab can be reopened (Ctrl+Shift+T, the menu).
+  static bool CanReopenClosed();
 
   // For saving and restoring windows (saved_windows.cc).
   struct TabState {
@@ -244,6 +248,12 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   void Cycle(Window* window, int delta);
   void CloseTab(Window* window, size_t index);
   void NewTab(Window* window);
+  // A window of its own for the site's home page (Ctrl+N).
+  void NewWindow(Window* window);
+  // Remembers a tab going away, for ReopenClosed().
+  void RememberClosed(const Tab& tab);
+  // The last tab closed comes back, with its history, in `window`.
+  void ReopenClosed(Window* window);
   void UpdateTabs(Window* window);
   // Live, awake tabs not shown, in all windows (for the coordinator).
   int BackgroundTabs();
@@ -266,6 +276,9 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   std::vector<std::unique_ptr<Window>> windows_;
   raw_ptr<Window> last_active_ = nullptr;
   Next next_;
+  // Tabs closed, the last one at the back (kMaxClosed at most): their
+  // address and history, as saved windows keep them.
+  std::deque<TabState> closed_;
   base::RepeatingCallback<Shell*(content::BrowserContext*,
                                           const TabState&)>
       tab_loader_;

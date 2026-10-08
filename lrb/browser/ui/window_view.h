@@ -71,6 +71,8 @@ class WindowView : public views::View,
     base::RepeatingCallback<void(int)> cycle;  // +1 next, -1 previous
     base::RepeatingCallback<void(size_t)> close;
     base::RepeatingClosure new_tab;
+    base::RepeatingClosure new_window;     // Ctrl+N
+    base::RepeatingClosure reopen_closed;  // Ctrl+Shift+T
   };
   explicit WindowView(TabActions actions);
   WindowView(const WindowView&) = delete;
@@ -188,6 +190,8 @@ class WindowView : public views::View,
     kDismissDownload,
     kToggleBlocking,
     kSettings,
+    kNewWindow,
+    kReopenClosed,
     kForgetFirst = 100,
   };
   void ShowDownloadMenu();
@@ -219,6 +223,8 @@ class WindowView : public views::View,
   void ShowMenu();
   void NewPage();
   void CloseSoon();
+  // F11: the window fills the screen, without the bar and the tab row.
+  void ToggleFullscreen();
 
   // views::View:
   gfx::Size GetMinimumSize() const override;
@@ -246,6 +252,7 @@ class WindowView : public views::View,
   GURL back_url_;
   bool loading_ = false;
 
+  raw_ptr<views::View> bar_ = nullptr;
   raw_ptr<views::ImageButton> back_ = nullptr;
   raw_ptr<views::ImageButton> forward_ = nullptr;
   raw_ptr<views::ImageButton> reload_ = nullptr;

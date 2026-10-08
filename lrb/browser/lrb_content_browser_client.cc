@@ -261,6 +261,7 @@ void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
     // Last resort under memory pressure: save the windows' history, exit.
     // Opening the site again restores them (RestoreSavedWindows).
     VLOG(1) << "lrb: closing " << site_ << " to free memory";
+    KeepSession();  // the windows go now, but come back
     SaveWindows(browser_context(),
                 base::BindOnce(&LrbContentBrowserClient::CloseAllWindowsSoon,
                                base::Unretained(this)));

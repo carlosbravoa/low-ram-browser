@@ -126,7 +126,8 @@ void LrbBrowserMainParts::OpenFirstWindow() {
   LrbPlatformDelegate::SetNextWindowBackUrl(
       GURL(command_line.GetSwitchValueASCII(switches::kBackUrl)));
   OpenStartupWindows(browser_context_.get(), startup_url,
-                     command_line.HasSwitch(switches::kRestoreLeft));
+                     command_line.HasSwitch(switches::kRestoreLeft),
+                     command_line.HasSwitch(switches::kResume));
 }
 
 void LrbBrowserMainParts::WillRunMainMessageLoop(

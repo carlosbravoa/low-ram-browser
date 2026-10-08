@@ -80,7 +80,7 @@ def main():
         window = x11.windows()[0][0]
         x11.key(window, XK_f, Mod1Mask)  # the menu
         time.sleep(0.8)
-        for _ in range(3):  # New page, Close page, Turn off/on blocking
+        for _ in range(4):  # New tab, New window, Close tab, Turn off/on blocking
             x11.key(window, XK_Down, 0)
             time.sleep(0.3)
         x11.key(window, XK_Return, 0)

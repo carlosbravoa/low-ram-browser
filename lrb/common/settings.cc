@@ -69,6 +69,21 @@ Settings Settings::Read() {
     settings.search_url = *url;
   }
   settings.gpu = dict->FindBool("gpu");
+  if (const std::string* startup = dict->FindString("startup")) {
+    if (*startup == "blank") {
+      settings.startup = Startup::kBlank;
+    } else if (*startup == "page") {
+      settings.startup = Startup::kPage;
+    }
+  }
+  if (const std::string* page = dict->FindString("startup_page");
+      page && (page->starts_with("https://") || page->starts_with("http://"))) {
+    settings.startup_page = *page;
+  }
+  if (const std::string* level = dict->FindString("content_blocking");
+      level && (*level == "full" || *level == "lean" || *level == "off")) {
+    settings.content_blocking = *level;
+  }
   return settings;
 }
 
@@ -78,6 +93,25 @@ bool Settings::Write(const Settings& settings) {
   dict.Set("search_url", settings.search_url);
   if (settings.gpu) {
     dict.Set("gpu", *settings.gpu);
+  }
+  // Read by lrb_coordinator too, which parses only plain strings
+  // (coordinator::JsonString in rules.h): keep these values plain.
+  switch (settings.startup) {
+    case Startup::kLastSite:
+      dict.Set("startup", "last-site");
+      break;
+    case Startup::kBlank:
+      dict.Set("startup", "blank");
+      break;
+    case Startup::kPage:
+      dict.Set("startup", "page");
+      break;
+  }
+  if (!settings.startup_page.empty()) {
+    dict.Set("startup_page", settings.startup_page);
+  }
+  if (!settings.content_blocking.empty()) {
+    dict.Set("content_blocking", settings.content_blocking);
   }
   std::optional<std::string> json = base::WriteJson(dict);
   const base::FilePath file = File();

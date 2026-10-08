@@ -133,4 +133,94 @@ std::string FormatBounds(const WindowBounds& bounds) {
          std::to_string(bounds.width) + "," + std::to_string(bounds.height);
 }
 
+std::optional<std::string> JsonString(std::string_view json,
+                                      std::string_view key) {
+  const std::string quoted = "\"" + std::string(key) + "\"";
+  size_t i = json.find(quoted);
+  if (i == std::string_view::npos) {
+    return std::nullopt;
+  }
+  i += quoted.size();
+  auto skip_space = [&] {
+    while (i < json.size() && (json[i] == ' ' || json[i] == '\t' ||
+                               json[i] == '\n' || json[i] == '\r')) {
+      ++i;
+    }
+  };
+  skip_space();
+  if (i >= json.size() || json[i] != ':') {
+    return std::nullopt;
+  }
+  ++i;
+  skip_space();
+  if (i >= json.size() || json[i] != '"') {
+    return std::nullopt;
+  }
+  std::string value;
+  for (++i; i < json.size(); ++i) {
+    const char c = json[i];
+    if (c == '"') {
+      return value;
+    }
+    if (static_cast<unsigned char>(c) < 0x20) {
+      return std::nullopt;  // control characters must be escaped
+    }
+    if (c != '\\') {
+      value += c;
+      continue;
+    }
+    if (++i >= json.size()) {
+      return std::nullopt;
+    }
+    switch (json[i]) {
+      case '"':
+      case '\\':
+      case '/':
+        value += json[i];
+        break;
+      case 'b':
+        value += '\b';
+        break;
+      case 'f':
+        value += '\f';
+        break;
+      case 'n':
+        value += '\n';
+        break;
+      case 'r':
+        value += '\r';
+        break;
+      case 't':
+        value += '\t';
+        break;
+      case 'u': {
+        if (i + 4 >= json.size()) {
+          return std::nullopt;
+        }
+        int code = 0;
+        for (size_t k = 1; k <= 4; ++k) {
+          const char h = json[i + k];
+          const int digit = h >= '0' && h <= '9'   ? h - '0'
+                            : h >= 'a' && h <= 'f' ? h - 'a' + 10
+                            : h >= 'A' && h <= 'F' ? h - 'A' + 10
+                                                   : -1;
+          if (digit < 0) {
+            return std::nullopt;
+          }
+          code = code * 16 + digit;
+        }
+        if (code >= 0x80) {
+          return std::nullopt;  // not needed for lrb's plain values
+        }
+        value += static_cast<char>(code);
+        i += 4;
+        break;
+      }
+      default:
+        return std::nullopt;
+    }
+  }
+  return std::nullopt;  // unterminated
+}
+
 }  // namespace lrb::coordinator

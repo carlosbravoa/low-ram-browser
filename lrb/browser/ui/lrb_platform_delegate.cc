@@ -25,9 +25,11 @@
 #include "content/public/browser/web_contents.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/activity_tracker.h"
+#include "lrb/browser/lrb_browser_context.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/permission_manager.h"
 #include "lrb/browser/permissions/site_permissions.h"
+#include "lrb/browser/saved_windows.h"
 #include "lrb/browser/site.h"
 #include "lrb/browser/ui/file_picker.h"
 #include "lrb/browser/ui/javascript_dialogs.h"
@@ -193,6 +195,11 @@ void LrbPlatformDelegate::Initialize() {
 }
 
 void LrbPlatformDelegate::DidCloseLastWindow() {
+  // The user closed the site's windows (closing to free memory keeps them:
+  // KeepSession): they don't come back next time.
+  if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
+    SessionClosedByUser(client->browser_context());
+  }
   Shell::Shutdown();
 }
 
@@ -581,6 +588,20 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
         }
       },
       weak_factory_.GetWeakPtr(), base::Unretained(raw));
+  actions.new_window = base::BindRepeating(
+      [](base::WeakPtr<LrbPlatformDelegate> self, Window* window) {
+        if (self && self->Exists(window)) {
+          self->NewWindow(window);
+        }
+      },
+      weak_factory_.GetWeakPtr(), base::Unretained(raw));
+  actions.reopen_closed = base::BindRepeating(
+      [](base::WeakPtr<LrbPlatformDelegate> self, Window* window) {
+        if (self && self->Exists(window)) {
+          self->ReopenClosed(window);
+        }
+      },
+      weak_factory_.GetWeakPtr(), base::Unretained(raw));
   window->delegate->SetContentsView(
       std::make_unique<WindowView>(std::move(actions)));
   window->delegate->SetHasWindowSizeControls(true);
@@ -618,6 +639,7 @@ void LrbPlatformDelegate::CleanUp(Shell* shell) {
   Window* window = WindowOf(shell);
   DCHECK(window);
   const size_t index = *TabOf(window, shell);
+  RememberClosed(window->tabs[index]);
   if (window->tabs.size() > 1) {
     // One tab of several: the window stays.
     const bool was_active = index == window->active;
@@ -727,6 +749,7 @@ void LrbPlatformDelegate::CloseTab(Window* window, size_t index) {
     CloseByUser(tab.shell);  // CleanUp() removes the tab
     return;
   }
+  RememberClosed(tab);
   window->tabs.erase(window->tabs.begin() + index);  // nothing loaded
   if (index < window->active) {
     --window->active;
@@ -756,6 +779,60 @@ void LrbPlatformDelegate::UpdateTabs(Window* window) {
   if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
     client->ReportBackgroundTabs(BackgroundTabs());
   }
+  SessionChanged(window->context);
+}
+
+// static
+bool LrbPlatformDelegate::CanReopenClosed() {
+  return g_delegate && !g_delegate->closed_.empty();
+}
+
+void LrbPlatformDelegate::RememberClosed(const Tab& tab) {
+  constexpr size_t kMaxClosed = 10;
+  TabState closed;
+  closed.back_url = tab.back_url;
+  if (tab.shell) {
+    base::DictValue history = SerializeTab(tab.shell);
+    const base::ListValue* entries = history.FindList("entries");
+    if (!entries || entries->empty()) {
+      return;  // nothing but blank pages
+    }
+    closed.url = tab.shell->web_contents()->GetLastCommittedURL();
+    closed.title = tab.shell->web_contents()->GetTitle();
+    closed.history = std::move(history);
+  } else {
+    closed.url = tab.url;
+    closed.title = tab.title;
+    if (tab.history) {
+      closed.history = tab.history->Clone();
+    }
+  }
+  if (!closed.url.is_valid() || closed.url.IsAboutBlank()) {
+    return;
+  }
+  closed_.push_back(std::move(closed));
+  while (closed_.size() > kMaxClosed) {
+    closed_.pop_front();
+  }
+}
+
+void LrbPlatformDelegate::ReopenClosed(Window* window) {
+  if (closed_.empty()) {
+    return;
+  }
+  TabState tab = std::move(closed_.back());
+  closed_.pop_back();
+  next_ = Next();
+  next_.window = window;
+  LoadSavedTab(window->context, tab);
+}
+
+void LrbPlatformDelegate::NewWindow(Window* window) {
+  WindowView* view = ViewOf(window);
+  next_ = Next();
+  next_.new_window = true;
+  Shell::CreateNewWindow(window->context, view->NewTabUrl(), nullptr,
+                         gfx::Size());
 }
 
 void LrbPlatformDelegate::OnWidgetActivationChanged(views::Widget* widget,
@@ -794,6 +871,11 @@ void LrbPlatformDelegate::OnWindowClosed(Window* window) {
 
 void LrbPlatformDelegate::CloseWindow(Window* window) {
   // Tabs not loaded have nothing to lose; each page may ask first.
+  for (const Tab& tab : window->tabs) {
+    if (!tab.shell) {
+      RememberClosed(tab);
+    }
+  }
   std::erase_if(window->tabs, [](const Tab& tab) { return !tab.shell; });
   window->active = TabOf(window, ViewOf(window)->shell()).value_or(0);
   std::vector<Shell*> live;
@@ -865,6 +947,7 @@ void LrbPlatformDelegate::SetAddressBarURL(Shell* shell,
   if (view->shell() == shell) {
     view->SetUrl(url);
   }
+  SessionChanged(window->context);
 }
 
 void LrbPlatformDelegate::SetIsLoading(Shell* shell, bool loading) {

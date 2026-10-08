@@ -46,6 +46,12 @@ struct WindowBounds {
 std::optional<WindowBounds> ParseBounds(std::string_view text);
 std::string FormatBounds(const WindowBounds& bounds);
 
+// The string value of `key` in a flat JSON object (lrb's settings.json, as
+// lrb writes it): escapes decoded, \u only for ASCII. Nothing if the key is
+// missing, its value isn't a string, or it can't be decoded.
+std::optional<std::string> JsonString(std::string_view json,
+                                      std::string_view key);
+
 }  // namespace lrb::coordinator
 
 #endif  // LRB_COORDINATOR_RULES_H_

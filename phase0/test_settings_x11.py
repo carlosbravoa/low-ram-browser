@@ -92,7 +92,7 @@ def main():
 
         x11.key(window, XK_f, Mod1Mask)  # the menu
         time.sleep(0.8)
-        for _ in range(3):  # New page, Close page, Settings...
+        for _ in range(4):  # New tab, New window, Close tab, Settings...
             x11.key(window, XK_Down, 0)
             time.sleep(0.3)
         x11.key(window, XK_Return, 0)
@@ -111,6 +111,9 @@ def main():
         check("Settings: choosing an engine and saving writes it, rendering stays unchosen",
               saved.get("search_url") == "https://duckduckgo.com/?q=%s" and "gpu" not in saved,
               saved)
+        check("...and the new defaults: start on the last site, content blocking automatic",
+              saved.get("startup") == "last-site" and "content_blocking" not in saved and
+              "startup_page" not in saved, saved)
 
         x11.key(window, XK_l, ControlMask)
         time.sleep(0.4)

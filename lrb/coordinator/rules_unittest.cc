@@ -79,4 +79,18 @@ TEST(CoordinatorRules, WindowBounds) {
   EXPECT_FALSE(ParseBounds("1,2,300,400\nshow"));
 }
 
+TEST(CoordinatorRules, JsonString) {
+  const std::string json =
+      R"({"gpu":false,"search_url":"https://a.example/?q=%s",)"
+      R"("startup": "page", "startup_page":"https:\/\/b.example\/x\u003Cy\"z"})";
+  EXPECT_EQ("page", JsonString(json, "startup"));
+  EXPECT_EQ("https://b.example/x<y\"z", JsonString(json, "startup_page"));
+  EXPECT_EQ("https://a.example/?q=%s", JsonString(json, "search_url"));
+  EXPECT_FALSE(JsonString(json, "gpu"));               // not a string
+  EXPECT_FALSE(JsonString(json, "content_blocking"));  // missing
+  EXPECT_FALSE(JsonString(R"({"a":"b)", "a"));          // unterminated
+  EXPECT_FALSE(JsonString(R"({"a":"\u00e9"})", "a"));  // not ASCII
+  EXPECT_FALSE(JsonString("{\"a\":\"x\ny\"}", "a"));    // raw control
+}
+
 }  // namespace lrb::coordinator
