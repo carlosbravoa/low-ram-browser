@@ -199,6 +199,26 @@ std::string Getenv(const char* name) {
   return value ? value : "";
 }
 
+// A local X display (":0", ":1.0") as its socket's path. libxcb tries the
+// X server's abstract socket first and falls back to the path only on
+// ENOENT or ECONNREFUSED, but Landlock's scoping refuses abstract sockets
+// with EPERM: a confined instance couldn't reach the X server. A DISPLAY
+// that is a path (libxcb 1.14+) goes straight to the socket. Empty when
+// `display` isn't local or has no socket.
+std::string X11SocketPath(const std::string& display) {
+  if (!display.starts_with(':')) {
+    return "";
+  }
+  const std::string number = display.substr(1, display.find('.') - 1);
+  const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  if (number.empty() || !std::ranges::all_of(number, digit)) {
+    return "";
+  }
+  const std::string path = "/tmp/.X11-unix/X" + number;
+  struct stat st = {};
+  return stat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode) ? path : "";
+}
+
 bool MakeDirs(const std::string& path, mode_t mode) {
   for (size_t i = 1; i <= path.size(); ++i) {
     if (i == path.size() || path[i] == '/') {
@@ -322,6 +342,13 @@ bool ParseOptions(int argc, char** argv, Options& options) {
   if (options.adblock_file.empty()) {
     options.adblock_file =
         data_home + "/lrb/adblock/" + options.adblock_setting + ".adb";
+  }
+  // Longer would be cut short silently (sockaddr_un), and the next start
+  // couldn't find or replace the socket.
+  if (options.socket_path.size() >= sizeof(sockaddr_un{}.sun_path)) {
+    fprintf(stderr, "lrb_coordinator: socket path too long (%zu bytes): %s\n",
+            options.socket_path.size(), options.socket_path.c_str());
+    return false;
   }
   if (!options.url.empty() && !IsAcceptableUrl(options.url)) {
     fprintf(stderr, "lrb_coordinator: only http(s) URLs: %s\n",
@@ -972,6 +999,10 @@ class Coordinator {
         const std::string tmp = rw_dir + "/tmp";
         MakeDirs(tmp, 0700);
         setenv("TMPDIR", tmp.c_str(), 1);
+        const std::string x11 = X11SocketPath(Getenv("DISPLAY"));
+        if (!x11.empty()) {
+          setenv("DISPLAY", x11.c_str(), 1);
+        }
         std::string error;
         if (!coordinator::Confine(
                 InstancePolicy(options_, rw_dir, settings_writer), &error)) {
