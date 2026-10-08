@@ -83,7 +83,7 @@ fixed budget. Targets: 2 GB x86-64 laptops (primary) and a 1 GB Raspberry Pi
 | Threat | Chrome | lrb |
 |---|---|---|
 | A site reading another site's data (cookies, storage) | Blocked: data in a privileged process, renderers locked to their site | Blocked: other sites' data is in other processes and profiles |
-| A hijacked page reaching your files and system | Per-renderer sandbox | Planned: whole-instance OS confinement (Landlock, seccomp) and the V8 sandbox. **Not built yet.** |
+| A hijacked page reaching your files and system | Per-renderer sandbox | Whole-instance OS confinement (Landlock, seccomp, no_new_privs; `lrb/coordinator/confine.h`) and the V8 sandbox. The user's files reach it only through the coordinator's file picker (`broker.h`) |
 | Third-party content (ads, embeds) inside a page | Cross-site iframes in their own process | **Shares the page's process**: a malicious ad on a site can reach that site's data. Mitigated by content blocking |
 | One page crashing others | Only its renderer dies | Only its window's instance dies |
 
@@ -108,7 +108,4 @@ files outside the profiles directory.
 
 ## Open questions
 
-- OS confinement: Landlock and seccomp around each instance.
-- The GPU trade-off per device class (laptops and the Pi have GPUs): the
-  first start should show it and ask.
 - Packaging: a tarball and a .deb first; a snap later.

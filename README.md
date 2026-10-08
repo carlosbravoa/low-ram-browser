@@ -12,9 +12,9 @@ follows Chromium's Stable releases. Every change is judged by measured
 memory, and keeping mainstream sites working is the hard constraint. The
 numbers and how to reproduce them are in [MEASUREMENTS.md](MEASUREMENTS.md).
 
-**Status: experimental.** It is usable day to day, but the whole-browser
-OS confinement (Landlock, seccomp) that replaces Chromium's per-renderer
-sandbox isn't built yet. Until it is, don't use lrb for accounts that matter.
+**Status: experimental.** It is usable day to day. Each site's process runs
+under whole-browser OS confinement (Landlock, seccomp) in place of
+Chromium's per-renderer sandbox; see [Security](#security).
 
 ## How it saves memory
 
@@ -34,6 +34,26 @@ sandbox isn't built yet. Until it is, don't use lrb for accounts that matter.
   experiment test config.
 - **A native slim bar** (Views, about 2 MB per window) rather than an HTML
   one.
+
+## Security
+
+- **Sites are kept apart by processes and profiles:** a site never shares
+  a process or its cookies and storage with another site.
+- **Every site's process is confined** by `lrb_coordinator` before it
+  starts: Landlock limits it to its own profile, the browser's files, and
+  what a desktop browser needs (system libraries, fonts, themes, sound,
+  camera, GPU), not your home directory or other sites' profiles. seccomp
+  refuses system calls a browser never needs, and `no_new_privs` keeps
+  setuid programs from giving privileges back. On a kernel without
+  Landlock, seccomp and `no_new_privs` still apply.
+- **Your files only through the file picker:** uploads and downloads go
+  through the desktop's own file dialog (XDG portal), shown by the
+  coordinator, which hands the site only the file you chose. Upload copies
+  are deleted when the site's process exits.
+- **Third-party content inside a page** (ads, embeds) shares that page's
+  process, unlike in Chrome; content blocking removes most of it.
+
+Details and the comparison with Chrome: [docs/design.md](docs/design.md#security-model).
 
 ## On a Raspberry Pi 3 (1 GB)
 
