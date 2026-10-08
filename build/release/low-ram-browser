@@ -1,0 +1,6 @@
+#!/bin/sh
+# Starts low-ram-browser: the coordinator, which opens each site in its own
+# confined window and handles memory pressure. Arguments: an optional
+# http(s) URL.
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/lib/lrb_coordinator" "$@"

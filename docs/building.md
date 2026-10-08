@@ -36,9 +36,13 @@ official build).
 
 `CHROMIUM_WORKDIR` overrides where the checkout lives (default `~/chromium`).
 
-`build/build.sh` builds `lrb`, `lrb_coordinator` and `content_shell` (the
-measurement reference, built with lrb's patches) and writes
-`dist/lrb-<cpu>-<commit>.tar.zst`. To measure it against Chromium's own
+`build/build.sh` builds `lrb`, `lrb_coordinator`, `lrb_picker` and
+`content_shell` (the measurement reference, built with lrb's patches) and
+writes `dist/lrb-<cpu>-<commit>.tar.zst`, the developer layout the tests
+and the harness use. `build/package_release.sh <version>` turns those into
+the user packages for a release (`dist/release-<version>/`): a
+`low-ram-browser` launcher and `install.sh` at the top, the browser in
+`lib/`, no `content_shell`, and `SHA256SUMS`. To measure it against Chromium's own
 snapshot, interleaved in one sweep (the `lrb-*` configs are the `cs-*` ones
 run on our build; see docs/measuring.md):
 

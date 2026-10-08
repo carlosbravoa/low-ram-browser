@@ -98,6 +98,18 @@ and without the GPU. More numbers, and how to reproduce them:
 - No remote-debugging server unless explicitly asked for.
 - Origin trials use Chromium's production key.
 
+## Download
+
+Pre-releases for 64-bit x86 and ARM Linux (a Raspberry Pi with the 64-bit
+OS) are on the [releases page](https://github.com/carlosbravoa/low-ram-browser/releases).
+
+```sh
+tar --zstd -xf low-ram-browser-<version>-linux-x64.tar.zst
+cd low-ram-browser-<version>
+./low-ram-browser            # try it from here
+./install.sh                 # optional: applications menu and PATH, no root
+```
+
 ## Building and running
 
 Linux x86-64 build machine, about 100 GB of disk and 32 GB of RAM. Builds
