@@ -62,10 +62,11 @@ void LrbBrowserMainParts::ToolkitInitialized() {
   ui::LinuxUi::SetInstance(ui::GetDefaultLinuxUi());
 }
 
-void LrbBrowserMainParts::PostCreateThreads() {
+int LrbBrowserMainParts::PostCreateThreads() {
   performance_manager_lifetime_ =
       std::make_unique<performance_manager::PerformanceManagerLifetime>(
           performance_manager::GraphFeatures::WithMinimal(), base::DoNothing());
+  return 0;
 }
 
 int LrbBrowserMainParts::PreMainMessageLoopRun() {

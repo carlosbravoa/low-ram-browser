@@ -15,6 +15,9 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
+#include <span>
+#include <string_view>
 
 namespace lrb::coordinator {
 
@@ -91,9 +94,9 @@ bool CopyFile(const std::string& from, const std::string& to) {
     return false;
   }
   bool ok = true;
-  char buffer[1 << 16];
+  std::array<char, 1 << 16> buffer;
   for (;;) {
-    const ssize_t n = read(in, buffer, sizeof(buffer));
+    const ssize_t n = read(in, buffer.data(), buffer.size());
     if (n == 0) {
       break;
     }
@@ -105,7 +108,9 @@ bool CopyFile(const std::string& from, const std::string& to) {
       break;
     }
     for (ssize_t done = 0; done < n;) {
-      const ssize_t w = write(out, buffer + done, static_cast<size_t>(n - done));
+      const auto rest = std::span(buffer).subspan(
+          static_cast<size_t>(done), static_cast<size_t>(n - done));
+      const ssize_t w = write(out, rest.data(), rest.size());
       if (w < 0 && errno == EINTR) {
         continue;
       }
@@ -169,10 +174,11 @@ FileBroker::~FileBroker() {
 
 // static
 std::string FileBroker::Encode(const std::string& text) {
-  static constexpr char kHex[] = "0123456789ABCDEF";
+  static constexpr std::string_view kHex = "0123456789ABCDEF";
+  static constexpr std::string_view kSafe = "._~/-";
   std::string out;
   for (unsigned char c : text) {
-    if (isalnum(c) || strchr("._~/-", c)) {
+    if (isalnum(c) || kSafe.find(static_cast<char>(c)) != kSafe.npos) {
       out += static_cast<char>(c);
     } else {
       out += '%';

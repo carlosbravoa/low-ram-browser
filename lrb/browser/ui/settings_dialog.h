@@ -5,6 +5,7 @@
 #ifndef LRB_BROWSER_UI_SETTINGS_DIALOG_H_
 #define LRB_BROWSER_UI_SETTINGS_DIALOG_H_
 
+#include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 
 namespace views {

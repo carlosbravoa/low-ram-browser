@@ -42,7 +42,7 @@ class LrbBrowserMainParts : public content::BrowserMainParts {
   // content::BrowserMainParts:
   void PostCreateMainMessageLoop() override;
   void ToolkitInitialized() override;
-  void PostCreateThreads() override;
+  int PostCreateThreads() override;
   int PreMainMessageLoopRun() override;
   void WillRunMainMessageLoop(
       std::unique_ptr<base::RunLoop>& run_loop) override;
