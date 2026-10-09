@@ -27,6 +27,7 @@
 #include "components/variations/variations_switches.h"
 #include "content/public/common/content_switch_dependent_feature_overrides.h"
 #include "content/public/common/main_function_params.h"
+#include "lrb/browser/dark_pages.h"
 #include "lrb/browser/lrb_browser_context.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/common/content_blocker.h"
@@ -190,6 +191,10 @@ std::optional<int> LrbMainDelegate::BasicStartupComplete() {
   ApplyDefaults(command_line);
   if (!command_line.HasSwitch(::switches::kProcessType)) {
     LrbBrowserContext::SetUpProfileDir(command_line);
+  }
+  if (!command_line.HasSwitch(::switches::kProcessType)) {
+    LoadDarkPages(
+        command_line.GetSwitchValuePath(lrb::switches::kUserDataDir));
   }
   // Before any request, and while blocking file access is still allowed. In
   // single-process mode (lrb's design) the renderer is this process.

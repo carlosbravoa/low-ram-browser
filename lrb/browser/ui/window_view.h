@@ -20,6 +20,7 @@
 #include "base/memory/weak_ptr.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/views/view.h"
@@ -45,11 +46,14 @@ namespace lrb {
 class AddressField;
 class Shell;
 class ShortcutHandler;
+class SuggestionsPopup;
+struct Suggestion;
 
 // A window's contents: lrb's slim bar above the page. One 36 px row: back,
 // forward, reload/stop, the site chip (the page's site, in a colour derived
-// from it) with the rest of the address beside it (click either to edit),
-// the count of requests blocked on this page, and a menu. Native Views, not
+// from it) with the rest of the address beside it (click either to edit;
+// typing offers bookmarks and visited sites), a bookmark star, the count of
+// requests blocked on this page, and a menu. Native Views, not
 // HTML: a web-page bar measured 6.5 MB per window against 2.7 MB.
 //
 // With 2+ tabs, a thin row of them under the bar. The bar shows the active
@@ -89,8 +93,13 @@ class WindowView : public views::View,
   // the next ShowTab().
   void PageClosed();
   Shell* shell() const { return shell_; }
-  // The tab row: titles, and which tab is shown. Hidden with one tab.
-  void SetTabs(const std::vector<std::u16string>& titles, size_t active);
+  // The tab row: titles and icons, and which tab is shown. Hidden with one
+  // tab.
+  struct TabLabel {
+    std::u16string title;
+    gfx::ImageSkia icon;  // the page's (favicon.h); empty: none
+  };
+  void SetTabs(std::vector<TabLabel> tabs, size_t active);
   // Where a new tab starts: the site's home page.
   GURL NewTabUrl() const;
   void SetUrl(const GURL& url);
@@ -192,7 +201,11 @@ class WindowView : public views::View,
     kSettings,
     kNewWindow,
     kReopenClosed,
+    kPrint,
+    kDarkPages,
+    kBookmarks,  // the submenu
     kForgetFirst = 100,
+    kBookmarkFirst = 1000,
   };
   void ShowDownloadMenu();
   // Content blocking off (or back on) for this site, then reload.
@@ -220,7 +233,24 @@ class WindowView : public views::View,
   void FocusAddress();
   void Navigate(std::u16string_view text);
   void SetBlocked(int count);
+  // The menu, once the bookmarks for its submenu are known.
   void ShowMenu();
+  void ShowMenuWith(std::vector<Suggestion> bookmarks);
+
+  // The star: whether the shown page is bookmarked (asked of the
+  // coordinator as pages change), and Ctrl+D or a click to change it.
+  void UpdateBookmarked();
+  void ToggleBookmark();
+  void SetBookmarked(bool bookmarked);
+
+  // Suggestions as the address is typed (bookmarks.h), and completing it
+  // inline with the first one when it starts with what was typed.
+  void OnAddressTyped(const std::u16string& text);
+  void OnSuggestions(std::u16string typed,
+                     bool complete,
+                     std::vector<Suggestion> found);
+  void OpenSuggestion(GURL url);
+  void HideSuggestions();
   void NewPage();
   void CloseSoon();
   // F11: the window fills the screen, without the bar and the tab row.
@@ -238,6 +268,7 @@ class WindowView : public views::View,
 
   // ui::SimpleMenuModel::Delegate:
   void ExecuteCommand(int command_id, int event_flags) override;
+  bool IsCommandIdChecked(int command_id) const override;
   bool GetAcceleratorForCommandId(int command_id,
                                   ui::Accelerator* accelerator) const override;
 
@@ -258,6 +289,14 @@ class WindowView : public views::View,
   raw_ptr<views::ImageButton> reload_ = nullptr;
   raw_ptr<views::LabelButton> chip_ = nullptr;
   raw_ptr<AddressField> address_ = nullptr;
+  raw_ptr<views::ImageButton> star_ = nullptr;
+  bool bookmarked_ = false;
+  // What the user typed in the address (without inline completion).
+  std::u16string typed_;
+  // The address as completed inline and where it goes (the suggestion's
+  // own URL: the completion shows it without its scheme).
+  std::optional<std::pair<std::u16string, GURL>> completion_;
+  std::unique_ptr<SuggestionsPopup> suggestions_;
   raw_ptr<views::LabelButton> blocked_ = nullptr;
   raw_ptr<views::LabelButton> download_ = nullptr;
   std::optional<DownloadStatus> download_status_;
@@ -285,6 +324,8 @@ class WindowView : public views::View,
   std::vector<blink::PermissionType> forget_;
 
   ui::SimpleMenuModel menu_model_{this};
+  ui::SimpleMenuModel bookmarks_menu_model_{this};
+  std::vector<GURL> bookmark_urls_;  // the submenu's, by command id
   std::unique_ptr<views::MenuRunner> menu_runner_;
   std::unique_ptr<ShortcutHandler> shortcuts_;
   int find_request_id_ = 0;

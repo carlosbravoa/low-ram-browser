@@ -25,9 +25,12 @@ done
 for t in test_site_windows.py test_back_x11.py test_permission_prompt_x11.py \
          test_close_warning_x11.py test_portal_picker.py test_context_menu_x11.py \
          test_find_zoom_x11.py test_sign_in_x11.py test_blocking_switch_x11.py \
-         test_settings_x11.py test_tabs_x11.py test_shortcuts_x11.py; do
+         test_settings_x11.py test_tabs_x11.py test_shortcuts_x11.py \
+         test_print_dark_x11.py; do
   run 300 "$t" "$dir/lrb"
 done
-run 120 test_confined_window_x11.py "$dir"  # through the coordinator: confined
+# Through the coordinator (confined), on the X11 display.
+run 120 test_confined_window_x11.py "$dir"
+run 200 test_bookmarks_x11.py "$dir"
 echo "crash traps: $(journalctl -k --since "@$t0" -o cat 2>/dev/null | grep -c 'trap int3')"
 python3 -c "from lrb_harness import x11; print('lrb windows left open:', len(x11.windows()))"

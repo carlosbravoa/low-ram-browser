@@ -65,10 +65,14 @@ python3 -m lrb_harness run --binary lrb=../dist/x/content-shell/content_shell \
   Chromium's Debian sysroot.
 - `gn gen` must stay rooted at our targets (`--root-target=//lrb
   --root-pattern=//lrb:all`; `build/build.sh` does it): `//chrome` targets
-  assert the PDF, printing and mDNS features `args.gn` drops. Only the
+  assert the PDF viewer, print preview and mDNS features `args.gn` drops
+  (printing itself is in, for Print to PDF). Only the
   *last* `--root-pattern` takes effect, whatever `gn help` says, hence the
   single `//lrb:all` group.
 - `build/build.sh` symlinks this repo's `lrb/` to `~/chromium/src/lrb`.
+- `enable_printing = true` needs `enterprise_watermark = false`: the print
+  compositor's watermarks pull in the PDF viewer (`//pdf`), which
+  `enable_pdf = false` leaves out.
 
 ## Moving the pinned commit
 

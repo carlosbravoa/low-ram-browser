@@ -254,6 +254,10 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   void RememberClosed(const Tab& tab);
   // The last tab closed comes back, with its history, in `window`.
   void ReopenClosed(Window* window);
+  // The tab row and the window's icon.
+  void ShowTabRow(Window* window);
+  // The tab row, and what follows a change of tabs (the session, the
+  // coordinator's count of background tabs).
   void UpdateTabs(Window* window);
   // Live, awake tabs not shown, in all windows (for the coordinator).
   int BackgroundTabs();

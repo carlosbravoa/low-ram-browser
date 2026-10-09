@@ -86,6 +86,7 @@ fixed budget. Targets: 2 GB x86-64 laptops (primary) and a 1 GB Raspberry Pi
 | A hijacked page reaching your files and system | Per-renderer sandbox | Whole-instance OS confinement (Landlock, seccomp, no_new_privs; `lrb/coordinator/confine.h`) and the V8 sandbox. The user's files reach it only through the coordinator's file picker (`broker.h`) |
 | Third-party content (ads, embeds) inside a page | Cross-site iframes in their own process | **Shares the page's process**: a malicious ad on a site can reach that site's data. Mitigated by content blocking |
 | One page crashing others | Only its renderer dies | Only its window's instance dies |
+| A site learning which other sites you use | History and bookmarks in the browser process, out of renderers' reach | **Readable by any instance** through the coordinator (address-bar suggestions, the bookmarks menu; decided 2026-10-08): the sites visited and bookmarks, not what was done there. An instance can add or remove bookmarks of its own site only |
 
 The remaining exposure is third-party frames inside a site's own window.
 Banks and email providers carry few, and content blocking removes most of
@@ -96,7 +97,14 @@ over a Unix socket in `$XDG_RUNTIME_DIR/lrb` (mode 0700). It checks that
 every URL belongs to the named site and that site names are safe directory
 names. A compromised instance can open windows for any site (as a click
 could), but it can't make another site's window load a foreign URL or touch
-files outside the profiles directory.
+files outside the profiles directory. Bookmark changes are tied to the
+profile the coordinator started the instance with (`SO_PEERCRED`), never to
+what it says about itself (`lrb/coordinator/bookmarks.h`).
+
+Printing is compiled in for Print to PDF only (`enable_printing`, no print
+preview or CUPS; `lrb/browser/print.h`): a page's `window.print()` reaches
+Chromium's printing code in the renderer (PrintRenderFrameHelper, Skia's
+PDF backend), as in Chrome.
 
 ## Notes
 

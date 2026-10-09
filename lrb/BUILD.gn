@@ -11,6 +11,7 @@
 # //content/shell but its resource pak.
 
 import("//build/rust/rust_static_library.gni")
+import("//printing/buildflags/buildflags.gni")
 import("//tools/grit/repack.gni")
 import("//testing/test.gni")
 
@@ -27,14 +28,20 @@ executable("lrb") {
     "browser/blocked_counter.h",
     "browser/blocking_url_loader_factory.cc",
     "browser/blocking_url_loader_factory.h",
+    "browser/bookmarks.cc",
+    "browser/bookmarks.h",
     "browser/coordinator_client.cc",
     "browser/coordinator_client.h",
+    "browser/dark_pages.cc",
+    "browser/dark_pages.h",
     "browser/devtools_manager_delegate.cc",
     "browser/devtools_manager_delegate.h",
     "browser/lrb_browser_main_parts.cc",
     "browser/lrb_browser_main_parts.h",
     "browser/download_manager_delegate.cc",
     "browser/download_manager_delegate.h",
+    "browser/favicon.cc",
+    "browser/favicon.h",
     "browser/list_updater.cc",
     "browser/lrb_browser_context.cc",
     "browser/lrb_browser_context.h",
@@ -45,6 +52,8 @@ executable("lrb") {
     "browser/permission_manager.h",
     "browser/permissions/site_permissions.cc",
     "browser/permissions/site_permissions.h",
+    "browser/print.cc",
+    "browser/print.h",
     "browser/saved_windows.cc",
     "browser/saved_windows.h",
     "browser/shell.cc",
@@ -69,6 +78,8 @@ executable("lrb") {
     "browser/ui/lrb_platform_delegate.h",
     "browser/ui/settings_dialog.cc",
     "browser/ui/settings_dialog.h",
+    "browser/ui/suggestions_popup.cc",
+    "browser/ui/suggestions_popup.h",
     "browser/ui/window_view.cc",
     "browser/ui/window_view.h",
     "common/content_blocker.cc",
@@ -138,7 +149,18 @@ executable("lrb") {
     "//ui/views/controls/webview",
     "//url",
     "//v8",
+    "//printing/buildflags",
   ]
+  if (enable_printing) {
+    # Printing to a PDF (browser/print.h).
+    deps += [
+      "//components/printing/browser",
+      "//components/printing/browser/print_to_pdf",
+      "//components/printing/common:mojo_interfaces",
+      "//components/printing/renderer",
+      "//printing",
+    ]
+  }
 
   data_deps = [
     ":pak",
@@ -219,6 +241,8 @@ source_set("settings") {
 
 static_library("coordinator_rules") {
   sources = [
+    "coordinator/bookmarks.cc",
+    "coordinator/bookmarks.h",
     "coordinator/rules.cc",
     "coordinator/rules.h",
   ]
@@ -250,6 +274,7 @@ executable("lrb_picker") {
 test("lrb_unittests") {
   sources = [
     "common/settings_unittest.cc",
+    "coordinator/bookmarks_unittest.cc",
     "coordinator/rules_unittest.cc",
   ]
   deps = [

@@ -5,6 +5,8 @@
 
 #include "lrb/renderer/lrb_content_renderer_client.h"
 
+#include <memory>
+
 #include "base/command_line.h"
 #include "base/debug/stack_trace.h"
 #include "base/functional/bind.h"
@@ -14,15 +16,22 @@
 #include "components/network_hints/renderer/web_prescient_networking_impl.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/web_identity.h"
+#include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
 #include "lrb/common/content_blocker.h"
 #include "lrb/renderer/cosmetic_filter.h"
 #include "net/base/net_errors.h"
+#include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/platform/url_loader_throttle_provider.h"
 #include "third_party/blink/public/platform/web_url_error.h"
 #include "third_party/blink/public/web/modules/credentialmanagement/throttle_helper.h"
 #include "v8/include/v8-initialization.h"
 #include "v8/include/v8-wasm-trap-handler-posix.h"
+
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "components/printing/renderer/print_render_frame_helper.h"
+#include "third_party/blink/public/web/web_element.h"
+#endif
 
 namespace lrb {
 
@@ -103,11 +112,37 @@ void LrbContentRendererClient::SetUpWebAssemblyTrapHandler() {
   }
 }
 
+#if BUILDFLAG(ENABLE_PRINTING)
+namespace {
+
+// Printing to a PDF without a preview (lrb/browser/print.h).
+class PrintDelegate : public printing::PrintRenderFrameHelper::Delegate {
+ public:
+  blink::WebElement GetPdfElement(blink::WebLocalFrame* frame) override {
+    return blink::WebElement();  // no PDF viewer
+  }
+  bool IsPrintPreviewEnabled() override { return false; }
+  bool ShouldGenerateTaggedPDF() override { return false; }
+  bool OverridePrint(blink::WebLocalFrame* frame) override { return false; }
+};
+
+}  // namespace
+#endif
+
 void LrbContentRendererClient::RenderFrameCreated(
     content::RenderFrame* render_frame) {
   if (ContentBlocker::loaded()) {
     new CosmeticFilter(render_frame);  // deletes itself with the frame
   }
+#if BUILDFLAG(ENABLE_PRINTING)
+  // The page is printed from its main frame, its iframes with it (in this
+  // one process). Not in every frame: each helper costs memory, and an
+  // iframe calling window.print() is rare (it does nothing then).
+  if (render_frame->IsMainFrame()) {
+    new printing::PrintRenderFrameHelper(  // deletes itself with the frame
+        render_frame, std::make_unique<PrintDelegate>());
+  }
+#endif
 }
 
 void LrbContentRendererClient::PrepareErrorPage(

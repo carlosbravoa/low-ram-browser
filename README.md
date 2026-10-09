@@ -52,6 +52,10 @@ Chromium's per-renderer sandbox; see [Security](#security).
   are deleted when the site's process exits.
 - **Third-party content inside a page** (ads, embeds) shares that page's
   process, unlike in Chrome; content blocking removes most of it.
+- **Bookmarks and the sites you've visited** are kept by the coordinator
+  and given to any site's window that asks (for the address bar's
+  suggestions and the bookmarks menu): a compromised site could read that
+  list, though not other sites' pages, cookies or data.
 
 Details and the comparison with Chrome: [docs/design.md](docs/design.md#security-model).
 
@@ -107,6 +111,20 @@ and without the GPU. More numbers, and how to reproduce them:
   next time you open the site. Closing a site's windows yourself forgets
   them. What's saved stays in that site's profile on disk: its pages'
   addresses, titles and form contents.
+- **Bookmarks and suggestions.** The star in the bar (or Ctrl+D)
+  bookmarks the page; the menu lists your bookmarks. Typing in the address
+  offers bookmarks and sites you've visited, and completes an address as
+  you type (Enter takes it, typing on replaces it). These lists span
+  sites, so the coordinator keeps them, not a site's process: any site's
+  window can ask for them, so a compromised site could learn which sites
+  you visit and bookmarked (not what you did there). A site can only add or
+  remove bookmarks of its own pages.
+- **Print to PDF** (Ctrl+P, the menu, or the page's own Print button): the
+  page as a PDF saved where you choose; print it from your PDF viewer.
+  There's no print dialog or preview: Chrome's costs tens of MB.
+- **Dark pages**, per site, from the menu: pages that have a dark theme
+  use it, Blink darkens the rest.
+- **Page icons** in the tabs and on the window (taskbar, Alt+Tab).
 - **Shortcuts:**
 
   | Keys | Does |
@@ -119,6 +137,7 @@ and without the GPU. More numbers, and how to reproduce them:
   | Alt+Left, Alt+Right, Alt+Home | Back, forward, the site's home page |
   | F5, Ctrl+R, Esc | Reload, stop loading |
   | Ctrl+F, Ctrl+Plus/Minus/0 | Find, zoom (remembered per site) |
+  | Ctrl+D, Ctrl+P | Bookmark the page (again: remove it), print to PDF |
   | F11, Alt+F | Full screen, the menu |
 
 - **Settings** (in the menu): search engine, GPU or software rendering,

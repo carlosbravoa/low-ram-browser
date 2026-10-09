@@ -17,9 +17,14 @@ v8_symbol_level = 0
 
 # Features a minimal browser drops.
 enable_pdf = false
-enable_printing = false
+# Printing only to a PDF file, with no dialog or preview (lrb/browser/
+# print.h): print preview is a WebUI page and needs the PDF viewer, CUPS
+# printing needs Chrome's dialogs.
+enable_printing = true
 enable_print_preview = false
 use_cups = false
+# Chrome's enterprise watermarks on printouts; it pulls in the PDF viewer.
+enterprise_watermark = false
 enable_widevine = false          # no DRM: Netflix/Spotify web won't play
 enable_vr = false
 enable_remoting = false

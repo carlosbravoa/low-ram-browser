@@ -39,6 +39,8 @@
 //                                                 left, for Back; restore:
 //                                                 going Back, so restore the
 //                                                 window the site left
+//                            bookmarks and address-bar suggestions:
+//                            lrb/coordinator/bookmarks.h
 //   launcher → coordinator   "launch <url>"       open url, site unknown yet
 //   coordinator → instance   "show <url> [bounds=..] [back=..]"
 //                                                 url is on your site
@@ -80,6 +82,7 @@
 #pragma allow_unsafe_buffers
 #endif
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <fcntl.h>
@@ -105,6 +108,7 @@
 #include <string_view>
 #include <vector>
 
+#include "lrb/coordinator/bookmarks.h"
 #include "lrb/coordinator/broker.h"
 #include "lrb/coordinator/confine.h"
 #include "lrb/coordinator/pressure.h"
@@ -207,6 +211,40 @@ std::string DirName(const std::string& path) {
 std::string Getenv(const char* name) {
   const char* value = getenv(name);
   return value ? value : "";
+}
+
+// A small file's contents (at most `max` bytes), empty if unreadable.
+std::string ReadSmallFile(const std::string& path, size_t max) {
+  std::string contents;
+  FILE* file = fopen(path.c_str(), "r");
+  if (!file) {
+    return contents;
+  }
+  char buffer[4096];
+  size_t n;
+  while (contents.size() < max &&
+         (n = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+    contents.append(buffer, n);
+  }
+  fclose(file);
+  return contents;
+}
+
+// Writes `contents` to `path` whole or not at all (a new file renamed over
+// it).
+bool WriteFileAtomically(const std::string& path, const std::string& contents) {
+  const std::string temp = path + ".new";
+  FILE* file = fopen(temp.c_str(), "w");
+  if (!file) {
+    return false;
+  }
+  const bool ok =
+      fwrite(contents.data(), 1, contents.size(), file) == contents.size();
+  if (fclose(file) != 0 || !ok || rename(temp.c_str(), path.c_str()) != 0) {
+    unlink(temp.c_str());
+    return false;
+  }
+  return true;
 }
 
 // A local X display (":0", ":1.0") as its socket's path. libxcb tries the
@@ -660,7 +698,125 @@ class Coordinator {
       if (IsAcceptableUrl(args)) {
         Launch(/*site=*/"", args);
       }
+    } else if (command == "suggest" || command == "bookmarks" ||
+               command == "is-bookmarked" || command == "bookmark-add" ||
+               command == "bookmark-remove") {
+      HandleBookmarks(client, command, args);
     }
+  }
+
+  // Bookmarks and suggestions (lrb/coordinator/bookmarks.h). Read from the
+  // file for each request (a keystroke's worth of work): nothing is kept in
+  // the coordinator's memory.
+  void HandleBookmarks(Client& client,
+                       const std::string& command,
+                       const std::string& args) {
+    const size_t space = args.find(' ');
+    const std::string first = args.substr(0, space);
+    const std::string rest =
+        space == std::string::npos ? "" : args.substr(space + 1);
+    auto valid_id = [](const std::string& id) {
+      return !id.empty() && id.size() <= 20 &&
+             id.find_first_not_of("0123456789") == std::string::npos;
+    };
+    std::string reply;
+    if (command == "suggest" && valid_id(first)) {
+      constexpr size_t kMaxSuggestions = 8;
+      for (const Suggestion& suggestion :
+           Suggest(DecodeText(rest), ReadBookmarks(), VisitedSites(),
+                   kMaxSuggestions)) {
+        reply += "suggestion " + first + (suggestion.bookmark ? " b " : " s ") +
+                 suggestion.url + " " + EncodeText(suggestion.title) + "\n";
+      }
+      reply += "suggestions-done " + first + "\n";
+    } else if (command == "bookmarks" && valid_id(first)) {
+      for (const Bookmark& bookmark : ReadBookmarks()) {
+        reply += "bookmark-item " + first + " " + bookmark.url + " " +
+                 EncodeText(bookmark.title) + "\n";
+      }
+      reply += "bookmarks-done " + first + "\n";
+    } else if (command == "is-bookmarked" && valid_id(first)) {
+      bool found = false;
+      for (const Bookmark& bookmark : ReadBookmarks()) {
+        found = found || bookmark.url == rest;
+      }
+      reply = "is-bookmarked " + first + (found ? " 1\n" : " 0\n");
+    } else if (command == "bookmark-add" || command == "bookmark-remove") {
+      // Only a page of the instance's own site, by the profile this
+      // coordinator started it with (never what it says about itself).
+      const std::string site = SiteOfProfile(client.profile);
+      if (site.empty() || !IsAcceptableUrl(first) ||
+          first.size() > kMaxBookmarkUrl || !UrlBelongsToSite(first, site)) {
+        Log("refused %s %s", command.c_str(), first.c_str());
+        return;
+      }
+      std::vector<Bookmark> bookmarks = ReadBookmarks();
+      std::erase_if(bookmarks,
+                    [&](const Bookmark& b) { return b.url == first; });
+      if (command == "bookmark-add") {
+        bookmarks.push_back({first, CleanTitle(DecodeText(rest))});
+      }
+      const std::string file = SerializeBookmarks(bookmarks);
+      if (bookmarks.size() > kMaxBookmarks || file.size() > kMaxBookmarksBytes) {
+        Log("refused bookmark-add: %zu bookmarks, %zu bytes", bookmarks.size(),
+            file.size());
+        return;
+      }
+      if (!WriteFileAtomically(BookmarksPath(), file)) {
+        Log("can't write %s: %s", BookmarksPath().c_str(), strerror(errno));
+      }
+      return;
+    } else {
+      return;
+    }
+    if (!WriteAll(client.fd, reply)) {
+      Drop(client.fd);
+    }
+  }
+
+  std::string BookmarksPath() const {
+    return options_.profiles_dir + "/.bookmarks";
+  }
+
+  std::vector<Bookmark> ReadBookmarks() const {
+    return ParseBookmarks(ReadSmallFile(BookmarksPath(), kMaxBookmarksBytes));
+  }
+
+  // The site whose profile `profile` is, empty if it's no site's (the
+  // resolver's, the settings window's).
+  std::string SiteOfProfile(const std::string& profile) const {
+    const std::string prefix = options_.profiles_dir + "/";
+    if (!profile.starts_with(prefix)) {
+      return std::string();
+    }
+    const std::string name = profile.substr(prefix.size());
+    return IsValidSite(name) ? name : std::string();
+  }
+
+  // Sites with a profile, the most recently used first (a profile's
+  // directory changes as its windows are saved).
+  std::vector<std::string> VisitedSites() const {
+    std::vector<std::pair<time_t, std::string>> found;
+    if (DIR* dir = opendir(options_.profiles_dir.c_str())) {
+      while (const dirent* entry = readdir(dir)) {
+        const std::string name = entry->d_name;
+        struct stat info = {};
+        if (name.starts_with(".") || !IsValidSite(name) ||
+            stat((options_.profiles_dir + "/" + name).c_str(), &info) != 0 ||
+            !S_ISDIR(info.st_mode)) {
+          continue;
+        }
+        found.push_back({info.st_mtime, name});
+      }
+      closedir(dir);
+    }
+    std::sort(found.begin(), found.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<std::string> sites;
+    for (auto& [time, name] : found) {
+      sites.push_back(std::move(name));
+    }
+    return sites;
   }
 
   // Shows `url` in `site`'s window, launching the instance if it has none.
@@ -1149,15 +1305,7 @@ class Coordinator {
     const std::string url = known != site_urls_.end()
                                 ? known->second
                                 : "https://" + site + "/";
-    const std::string path = LastSitePath();
-    const std::string temp = path + ".new";
-    if (FILE* file = fopen(temp.c_str(), "w")) {
-      const std::string line = site + " " + url + "\n";
-      const bool ok = fwrite(line.data(), 1, line.size(), file) == line.size();
-      if (fclose(file) == 0 && ok) {
-        rename(temp.c_str(), path.c_str());
-      }
-    }
+    WriteFileAtomically(LastSitePath(), site + " " + url + "\n");
   }
 
   bool ReadLastSite(std::string* site, std::string* url) const {

@@ -25,6 +25,7 @@
 #include "content/public/browser/web_contents.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/activity_tracker.h"
+#include "lrb/browser/favicon.h"
 #include "lrb/browser/lrb_browser_context.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/permission_manager.h"
@@ -38,6 +39,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/base/models/image_model.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
@@ -765,17 +767,37 @@ void LrbPlatformDelegate::NewTab(Window* window) {
                                   nullptr, gfx::Size());
 }
 
-void LrbPlatformDelegate::UpdateTabs(Window* window) {
-  std::vector<std::u16string> titles;
+void LrbPlatformDelegate::ShowTabRow(Window* window) {
+  std::vector<WindowView::TabLabel> labels;
   for (const Tab& tab : window->tabs) {
-    std::u16string title =
-        tab.shell ? tab.shell->web_contents()->GetTitle() : tab.title;
-    if (title.empty() && tab.shell) {
-      title = base::UTF8ToUTF16(tab.shell->web_contents()->GetVisibleURL().spec());
+    WindowView::TabLabel label;
+    label.title = tab.shell ? tab.shell->web_contents()->GetTitle() : tab.title;
+    if (label.title.empty() && tab.shell) {
+      label.title =
+          base::UTF8ToUTF16(tab.shell->web_contents()->GetVisibleURL().spec());
     }
-    titles.push_back(title.empty() ? u"New page" : title);
+    if (label.title.empty()) {
+      label.title = u"New page";
+    }
+    if (Favicon* favicon =
+            tab.shell ? Favicon::FromWebContents(tab.shell->web_contents())
+                      : nullptr) {
+      label.icon = favicon->icon();
+    }
+    labels.push_back(std::move(label));
   }
-  ViewOf(window)->SetTabs(titles, window->active);
+  // The window's icon (taskbar, Alt+Tab): the shown tab's page's.
+  if (window->active < labels.size()) {
+    window->delegate->SetIcon(
+        labels[window->active].icon.isNull()
+            ? ui::ImageModel()
+            : ui::ImageModel::FromImageSkia(labels[window->active].icon));
+  }
+  ViewOf(window)->SetTabs(std::move(labels), window->active);
+}
+
+void LrbPlatformDelegate::UpdateTabs(Window* window) {
+  ShowTabRow(window);
   if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
     client->ReportBackgroundTabs(BackgroundTabs());
   }
@@ -907,6 +929,17 @@ void LrbPlatformDelegate::SetContents(Shell* shell) {
       shell->web_contents(),
       window->widget->GetColorProvider()->GetColor(ui::kColorWindowBackground));
   const size_t index = *TabOf(window, shell);
+  // Its icon, in the tab row and on the window, as it comes.
+  Favicon::CreateForWebContents(shell->web_contents());
+  Favicon::FromWebContents(shell->web_contents())
+      ->SetOnChanged(base::BindRepeating(
+          [](base::WeakPtr<LrbPlatformDelegate> self, Shell* shell) {
+            // `shell` outlives its page's Favicon, which calls this.
+            if (Window* window = self ? self->WindowOf(shell) : nullptr) {
+              self->ShowTabRow(window);
+            }
+          },
+          weak_factory_.GetWeakPtr(), base::Unretained(shell)));
   if (!window->shown) {
     window->shown = true;
     window->active = index;

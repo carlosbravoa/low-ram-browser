@@ -125,6 +125,11 @@ CONFIGS["lrb-lean-adblock-lean"] = dict(
 CONFIGS["lrb-lean-gpu"] = dict(
     _LEAN, args=[a for a in _LEAN["args"] if a != "--disable-gpu"])
 
+# Dark pages (the menu's, per site; lrb/browser/dark_pages.h): Blink's
+# automatic dark mode on every page.
+CONFIGS["lrb-lean-dark"] = dict(
+    _LEAN, args=_LEAN["args"] + ["--lrb-dark-pages"])
+
 # With Chromium's field trial testing config (the testing group of every
 # experiment in testing/variations/fieldtrial_testing_config.json), as
 # lrb-lean-* measured before 2026-10-05.

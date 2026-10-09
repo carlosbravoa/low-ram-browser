@@ -38,11 +38,14 @@
 #include "content/public/common/url_constants.h"
 #include "lrb/browser/activity_tracker.h"
 #include "lrb/browser/blocking_url_loader_factory.h"
+#include "lrb/browser/bookmarks.h"
 #include "lrb/browser/coordinator_client.h"
+#include "lrb/browser/dark_pages.h"
 #include "lrb/browser/devtools_manager_delegate.h"
 #include "lrb/browser/list_updater.h"
 #include "lrb/browser/lrb_browser_context.h"
 #include "lrb/browser/lrb_browser_main_parts.h"
+#include "lrb/browser/print.h"
 #include "lrb/browser/saved_windows.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/site.h"
@@ -246,6 +249,9 @@ void LrbContentBrowserClient::SendToCoordinator(const std::string& line) {
 void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
   if (OnBrokerLine(line)) {
     return;  // files the user picked (ui/file_picker.h)
+  }
+  if (OnBookmarksLine(line)) {
+    return;  // bookmarks.h
   }
   if (line == "discard") {
     DiscardPages();
@@ -515,6 +521,7 @@ void LrbContentBrowserClient::OverrideWebPreferences(
     prefs->in_forced_colors = true;
     prefs->preferred_contrast = blink::mojom::PreferredContrast::kMore;
   }
+  ApplyDarkPages(prefs);  // the site's choice (the menu)
 }
 
 std::unique_ptr<content::DevToolsManagerDelegate>
@@ -626,6 +633,14 @@ bool LrbContentBrowserClient::HasErrorPage(int http_status_code) {
 void LrbContentBrowserClient::OnWebContentsCreated(
     content::WebContents* web_contents) {
   PerformanceManager().MaybeCreatePageNodeForWebContents(web_contents);
+  SetUpPrinting(web_contents);
+}
+
+void LrbContentBrowserClient::
+    RegisterAssociatedInterfaceBindersForRenderFrameHost(
+        content::RenderFrameHost& render_frame_host,
+        blink::AssociatedInterfaceRegistry& associated_registry) {
+  RegisterPrintingInterface(render_frame_host, associated_registry);
 }
 
 }  // namespace lrb

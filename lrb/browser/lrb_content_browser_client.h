@@ -114,6 +114,9 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   void RegisterBrowserInterfaceBindersForFrame(
       content::RenderFrameHost* render_frame_host,
       mojo::BinderMapWithContext<content::RenderFrameHost*>* map) override;
+  void RegisterAssociatedInterfaceBindersForRenderFrameHost(
+      content::RenderFrameHost& render_frame_host,
+      blink::AssociatedInterfaceRegistry& associated_registry) override;
   void OpenURL(content::SiteInstance* site_instance,
                const content::OpenURLParams& params,
                base::OnceCallback<void(content::WebContents*)> callback)

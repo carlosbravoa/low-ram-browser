@@ -131,3 +131,77 @@ def find(name):
                 walk(kids[i])
     walk(root)
     return found
+
+
+def type_text(w, text):
+    """Types `text` into `w`: lowercase letters, digits, '.', '/', '-' and
+    spaces (keys without Shift)."""
+    activate(w)
+    time.sleep(0.2)
+    for char in text:
+        _send_key(w, 0x20 if char == " " else ord(char), 0)
+        time.sleep(0.05)
+
+
+def icon_size(w):
+    """How many values the window's icon (_NET_WM_ICON) has: 0 for none."""
+    cardinal = x.XInternAtom(d, b"CARDINAL", 0)
+    name = x.XInternAtom(d, b"_NET_WM_ICON", 0)
+    t, f, n, after, data = ctypes.c_ulong(), ctypes.c_int(), ctypes.c_ulong(), ctypes.c_ulong(), ctypes.c_void_p()
+    if x.XGetWindowProperty(d, w, name, 0, 1 << 16, 0, cardinal, ctypes.byref(t), ctypes.byref(f),
+                            ctypes.byref(n), ctypes.byref(after), ctypes.byref(data)) == 0 and data.value:
+        return n.value
+    return 0
+
+
+class WindowAttributes(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int), ("width", ctypes.c_int), ("height", ctypes.c_int),
+                ("border_width", ctypes.c_int), ("depth", ctypes.c_int), ("visual", ctypes.c_void_p),
+                ("root", ctypes.c_ulong), ("c_class", ctypes.c_int), ("bit_gravity", ctypes.c_int),
+                ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int), ("backing_planes", ctypes.c_ulong),
+                ("backing_pixel", ctypes.c_ulong), ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+                ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int), ("all_event_masks", ctypes.c_long),
+                ("your_event_mask", ctypes.c_long), ("do_not_propagate_mask", ctypes.c_long),
+                ("override_redirect", ctypes.c_int), ("screen", ctypes.c_void_p)]
+x.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(WindowAttributes)]
+
+
+def shown_top_level():
+    """Shown top-level windows (the root's children: window managers'
+    frames, and the windows they don't manage, such as menus and lists
+    under a field), as (window, x, y, width, height)."""
+    found = []
+    r, p, kids, n = ctypes.c_ulong(), ctypes.c_ulong(), ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
+    if x.XQueryTree(d, root, ctypes.byref(r), ctypes.byref(p), ctypes.byref(kids), ctypes.byref(n)):
+        for i in range(n.value):
+            a = WindowAttributes()
+            if x.XGetWindowAttributes(d, kids[i], ctypes.byref(a)) and \
+                    a.map_state == 2:  # IsViewable
+                found.append((kids[i], a.x, a.y, a.width, a.height))
+    return found
+
+
+class XImage(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_int), ("height", ctypes.c_int), ("xoffset", ctypes.c_int), ("format", ctypes.c_int),
+                ("data", ctypes.c_void_p), ("byte_order", ctypes.c_int), ("bitmap_unit", ctypes.c_int),
+                ("bitmap_bit_order", ctypes.c_int), ("bitmap_pad", ctypes.c_int), ("depth", ctypes.c_int),
+                ("bytes_per_line", ctypes.c_int), ("bits_per_pixel", ctypes.c_int)]
+x.XGetImage.restype = ctypes.POINTER(XImage)
+x.XGetImage.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint,
+                        ctypes.c_ulong, ctypes.c_int]
+
+
+def pixels(w, left, top, width, height):
+    """The window's pixels in a rectangle, as rows of (r, g, b): what is on
+    screen there, lrb's bar and popups included (DevTools' screenshots show
+    the page only). Needs 24/32-bit colour."""
+    img = x.XGetImage(d, w, left, top, width, height, 0xffffffff, 2)  # ZPixmap
+    if not img:
+        return []
+    i = img.contents
+    data = ctypes.string_at(i.data, i.bytes_per_line * i.height)
+    rows = []
+    for y in range(i.height):
+        row = data[y * i.bytes_per_line: y * i.bytes_per_line + 4 * i.width]
+        rows.append([(row[4 * k + 2], row[4 * k + 1], row[4 * k]) for k in range(i.width)])
+    return rows

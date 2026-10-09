@@ -28,15 +28,20 @@
 #include "content/public/common/stop_find_action.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/blocked_counter.h"
+#include "lrb/browser/bookmarks.h"
+#include "lrb/browser/dark_pages.h"
 #include "lrb/browser/download_manager_delegate.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/permission_manager.h"
 #include "lrb/browser/permissions/site_permissions.h"
+#include "lrb/browser/print.h"
 #include "lrb/browser/site.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/browser/ui/settings_dialog.h"
+#include "lrb/browser/ui/suggestions_popup.h"
 #include "lrb/common/content_blocker.h"
 #include "lrb/common/settings.h"
+#include "lrb/coordinator/bookmarks.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom.h"
 #include "ui/aura/window.h"
@@ -49,6 +54,7 @@
 #include "ui/events/event_handler.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/color_utils.h"
+#include "ui/gfx/range/range.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
@@ -82,6 +88,26 @@ constexpr gfx::PathElement kMenuPath[] = {
     gfx::CIRCLE, 12, 19, 2};
 constexpr gfx::VectorIconRep kMenuReps[] = {{kMenuPath}};
 constexpr gfx::VectorIcon kMenuIcon(kMenuReps, 1, "lrb_menu");
+
+// A star's outline: not bookmarked (components' stars are filled).
+constexpr gfx::PathElement kStarOutlinePath[] = {
+    gfx::CANVAS_DIMENSIONS, 24,
+    gfx::STROKE, 1.8f,
+    gfx::MOVE_TO, 12.0f, 3.3f,
+    gfx::LINE_TO, 14.4f, 9.6f,
+    gfx::LINE_TO, 21.0f, 9.9f,
+    gfx::LINE_TO, 15.8f, 14.0f,
+    gfx::LINE_TO, 17.6f, 20.5f,
+    gfx::LINE_TO, 12.0f, 16.8f,
+    gfx::LINE_TO, 6.4f, 20.5f,
+    gfx::LINE_TO, 8.2f, 14.0f,
+    gfx::LINE_TO, 3.0f, 9.9f,
+    gfx::LINE_TO, 9.6f, 9.6f,
+    gfx::CLOSE};
+constexpr gfx::VectorIconRep kStarOutlineReps[] = {{kStarOutlinePath}};
+constexpr gfx::VectorIcon kStarOutlineIcon(kStarOutlineReps,
+                                           1,
+                                           "lrb_star_outline");
 
 constexpr int kBarHeight = 36;
 constexpr int kIconSize = 18;
@@ -151,6 +177,10 @@ class AddressField : public views::Textfield {
     SelectAll(false);
   }
 
+  void set_on_blur(base::RepeatingClosure on_blur) {
+    on_blur_ = std::move(on_blur);
+  }
+
   // views::Textfield:
   void OnFocus() override {
     views::Textfield::OnFocus();
@@ -162,11 +192,15 @@ class AddressField : public views::Textfield {
   void OnBlur() override {
     views::Textfield::OnBlur();
     SetText(rest_);
+    if (on_blur_) {
+      on_blur_.Run();
+    }
   }
 
  private:
   GURL url_;
   std::u16string rest_;
+  base::RepeatingClosure on_blur_;
 };
 
 BEGIN_METADATA(AddressField)
@@ -268,11 +302,23 @@ WindowView::WindowView(TabActions actions) : actions_(std::move(actions)) {
 
   address_ = bar->AddChildView(std::make_unique<AddressField>());
   address_->set_controller(this);
+  address_->set_on_blur(base::BindRepeating(&WindowView::HideSuggestions,
+                                            base::Unretained(this)));
   address_->SetProperty(
       views::kFlexBehaviorKey,
       views::FlexSpecification(views::LayoutOrientation::kHorizontal,
                                views::MinimumFlexSizeRule::kScaleToMinimum,
                                views::MaximumFlexSizeRule::kUnbounded));
+  suggestions_ = std::make_unique<SuggestionsPopup>(
+      address_, base::BindRepeating(&WindowView::OpenSuggestion,
+                                    base::Unretained(this)));
+
+  // Bookmarks are kept by the coordinator: shown with one (SetUrl).
+  star_ = bar->AddChildView(views::CreateVectorImageButtonWithNativeTheme(
+      base::BindRepeating(&WindowView::ToggleBookmark, base::Unretained(this)),
+      kStarOutlineIcon, kIconSize));
+  star_->SetVisible(false);
+  SetBookmarked(false);
 
   // Camera/microphone in use: red, like a recording light.
   constexpr SkColor kInUse = SkColorSetRGB(0xd9, 0x30, 0x25);
@@ -422,6 +468,7 @@ WindowView::Question& WindowView::Question::operator=(Question&&) = default;
 WindowView::Question::~Question() = default;
 
 WindowView::~WindowView() {
+  suggestions_.reset();
   DropQuestions();
   ClearPage();
 }
@@ -501,17 +548,16 @@ void WindowView::ClearPage() {
   contents_->RemoveChildViewT(web_view_.ExtractAsDangling().get());
 }
 
-void WindowView::SetTabs(const std::vector<std::u16string>& titles,
-                         size_t active) {
+void WindowView::SetTabs(std::vector<TabLabel> tabs, size_t active) {
   tab_row_->RemoveAllChildViews();
   // Hidden in fullscreen (F11) too.
-  tab_row_->SetVisible(titles.size() > 1 &&
+  tab_row_->SetVisible(tabs.size() > 1 &&
                        !(GetWidget() && GetWidget()->IsFullscreen()));
-  if (titles.size() <= 1) {
+  if (tabs.size() <= 1) {
     InvalidateLayout();
     return;
   }
-  for (size_t i = 0; i < titles.size(); ++i) {
+  for (size_t i = 0; i < tabs.size(); ++i) {
     auto* tab = tab_row_->AddChildView(std::make_unique<views::View>());
     tab->SetLayoutManager(std::make_unique<views::FlexLayout>())
         ->SetOrientation(views::LayoutOrientation::kHorizontal)
@@ -539,12 +585,16 @@ void WindowView::SetTabs(const std::vector<std::u16string>& titles,
               }
             },
             base::Unretained(&actions_), i),
-        titles[i]));
+        tabs[i].title));
+    if (!tabs[i].icon.isNull()) {
+      title->SetImageModel(views::Button::STATE_NORMAL,
+                           ui::ImageModel::FromImageSkia(tabs[i].icon));
+    }
     title->SetTriggerableEventFlags(ui::EF_LEFT_MOUSE_BUTTON |
                                     ui::EF_MIDDLE_MOUSE_BUTTON);
     title->SetMaxSize(gfx::Size(200, 0));
     title->SetElideBehavior(gfx::ELIDE_TAIL);
-    title->SetTooltipText(titles[i]);
+    title->SetTooltipText(tabs[i].title);
     title->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(3, 8)));
     title->SetProperty(
         views::kFlexBehaviorKey,
@@ -599,6 +649,7 @@ void WindowView::SetUrl(const GURL& url) {
                               : u"Edit address (Ctrl+L)");
   }
   address_->Show(url, AddressRest(url, site_));
+  UpdateBookmarked();
   UpdateZoom();
   if (find_row_->GetVisible()) {
     find_count_->SetText(std::u16string());  // a new page: search again
@@ -703,6 +754,10 @@ bool WindowView::HandleShortcut(const ui::KeyEvent& event) {
     actions_.reopen_closed.Run();
   } else if (ctrl && key == ui::VKEY_N) {
     actions_.new_window.Run();
+  } else if (ctrl && key == ui::VKEY_D && star_->GetVisible()) {
+    ToggleBookmark();
+  } else if (ctrl && key == ui::VKEY_P && kCanPrint) {
+    PrintToPdf(shell_->web_contents());
   } else if ((ctrl && key == ui::VKEY_W) || (ctrl && key == ui::VKEY_F4)) {
     CloseSoon();
   } else if (!mods && key == ui::VKEY_F11) {
@@ -938,7 +993,119 @@ void WindowView::ContentsChanged(views::Textfield* sender,
                                  const std::u16string& new_contents) {
   if (sender == find_input_) {
     Find(/*forward=*/true, /*new_session=*/true);  // as you type
+  } else if (sender == address_) {
+    OnAddressTyped(new_contents);
   }
+}
+
+void WindowView::OnAddressTyped(const std::u16string& text) {
+  // Completed inline only while typing on at the end: not after deleting
+  // (the completion would come back), not when editing inside.
+  const bool complete =
+      text.size() > typed_.size() && text.starts_with(typed_) &&
+      address_->GetSelectedRange().end() == text.size();
+  typed_ = text;
+  completion_.reset();
+  const std::u16string trimmed(
+      base::TrimWhitespace(text, base::TRIM_ALL));
+  if (trimmed.empty()) {
+    suggestions_->Hide();
+    return;
+  }
+  lrb::Suggest(trimmed, base::BindOnce(&WindowView::OnSuggestions,
+                                       weak_factory_.GetWeakPtr(), text,
+                                       complete));
+}
+
+void WindowView::OnSuggestions(std::u16string typed,
+                               bool complete,
+                               std::vector<Suggestion> found) {
+  if (typed != typed_ || !address_->HasFocus()) {
+    return;  // typed on since, or gone
+  }
+  if (complete && !found.empty()) {
+    std::string address(coordinator::DisplayAddress(found.front().url.spec()));
+    if (address.ends_with('/') && address.find('/') == address.size() - 1) {
+      address.pop_back();  // "github.com/" completes to "github.com"
+    }
+    const std::u16string completion = base::UTF8ToUTF16(address);
+    const std::u16string lowered = base::ToLowerASCII(typed);
+    if (completion.size() > typed.size() &&
+        base::StartsWith(base::ToLowerASCII(completion), lowered)) {
+      // The rest, selected: typing on replaces it, Enter takes it.
+      address_->SetText(typed + completion.substr(typed.size()));
+      address_->SetSelectedRange(
+          gfx::Range(address_->GetText().size(), typed.size()));
+      completion_.emplace(std::u16string(address_->GetText()),
+                          found.front().url);
+    }
+  }
+  suggestions_->Show(std::move(found));
+}
+
+void WindowView::OpenSuggestion(GURL url) {
+  HideSuggestions();  // `url` may be the completion's: taken by value
+  if (shell_ && url.SchemeIsHTTPOrHTTPS()) {
+    shell_->LoadURL(url);  // another site's: its window, as typed
+    shell_->web_contents()->Focus();
+  }
+}
+
+void WindowView::HideSuggestions() {
+  typed_.clear();
+  completion_.reset();
+  if (suggestions_) {
+    suggestions_->Hide();
+  }
+}
+
+void WindowView::UpdateBookmarked() {
+  const bool can = !site_.empty() && url_.SchemeIsHTTPOrHTTPS() &&
+                   LrbContentBrowserClient::Get() &&
+                   LrbContentBrowserClient::Get()->has_coordinator();
+  star_->SetVisible(can);
+  if (!can) {
+    return;
+  }
+  IsBookmarked(url_, base::BindOnce(
+                         [](base::WeakPtr<WindowView> view, GURL url,
+                            bool bookmarked) {
+                           if (view && view->url_ == url) {
+                             view->SetBookmarked(bookmarked);
+                           }
+                         },
+                         weak_factory_.GetWeakPtr(), url_));
+}
+
+void WindowView::ToggleBookmark() {
+  if (!shell_ || !star_->GetVisible()) {
+    return;
+  }
+  if (bookmarked_) {
+    RemoveBookmark(url_);
+  } else {
+    AddBookmark(url_, shell_->web_contents()->GetTitle());
+  }
+  SetBookmarked(!bookmarked_);
+  // The coordinator has the last word (a page of another site in a flow
+  // can't be bookmarked here): asked again.
+  UpdateBookmarked();
+}
+
+void WindowView::SetBookmarked(bool bookmarked) {
+  bookmarked_ = bookmarked;
+  if (bookmarked) {
+    views::SetImageFromVectorIconWithColor(
+        star_, vector_icons::kStarFilledIcon, kIconSize,
+        views::IconColors(SkColorSetRGB(0x1a, 0x73, 0xe8),
+                          ui::kColorIconDisabled));
+  } else {
+    views::SetImageFromVectorIconWithColor(
+        star_, kStarOutlineIcon, kIconSize,
+        views::IconColors(ui::kColorIcon, ui::kColorIconDisabled));
+  }
+  star_->SetTooltipText(bookmarked ? u"Remove bookmark (Ctrl+D)"
+                                   : u"Bookmark this page (Ctrl+D)");
 }
 
 void WindowView::ShowDownload(const DownloadStatus& status) {
@@ -1121,14 +1288,46 @@ void WindowView::ShowMenu() {
   if (!shell_) {
     return;
   }
-  // Rebuilt each time: the current site's remembered permission answers,
-  // each a way to forget it (the site asks again next time).
+  ListBookmarks(base::BindOnce(&WindowView::ShowMenuWith,
+                               weak_factory_.GetWeakPtr()));
+}
+
+void WindowView::ShowMenuWith(std::vector<Suggestion> bookmarks) {
+  if (!shell_ || !GetWidget()) {
+    return;
+  }
+  // Rebuilt each time: the bookmarks, the current site's remembered
+  // permission answers, each a way to forget it (the site asks again next
+  // time).
   menu_model_.Clear();
   menu_model_.AddItem(kNewPage, u"New tab");
   menu_model_.AddItem(kNewWindow, u"New window");
   menu_model_.AddItem(kClosePage, u"Close tab");
   if (LrbPlatformDelegate::CanReopenClosed()) {
     menu_model_.AddItem(kReopenClosed, u"Reopen closed tab");
+  }
+  bookmarks_menu_model_.Clear();
+  bookmark_urls_.clear();
+  for (const Suggestion& bookmark : bookmarks) {
+    bookmarks_menu_model_.AddItem(
+        kBookmarkFirst + static_cast<int>(bookmark_urls_.size()),
+        bookmark.title.empty() ? base::UTF8ToUTF16(bookmark.url.spec())
+                               : bookmark.title);
+    bookmark_urls_.push_back(bookmark.url);
+  }
+  if (!bookmark_urls_.empty()) {
+    menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
+    menu_model_.AddSubMenu(kBookmarks, u"Bookmarks", &bookmarks_menu_model_);
+  }
+  if (kCanPrint || !site_.empty()) {
+    menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
+  }
+  if (kCanPrint) {
+    menu_model_.AddItem(kPrint, u"Print to PDF...");
+  }
+  if (!site_.empty()) {
+    menu_model_.AddCheckItem(kDarkPages,
+                             u"Dark pages on " + base::UTF8ToUTF16(site_));
   }
   forget_.clear();
   if (url_.SchemeIsHTTPOrHTTPS()) {
@@ -1241,18 +1440,47 @@ bool WindowView::HandleKeyEvent(views::Textfield* sender,
     return false;
   }
   if (key_event.key_code() == ui::VKEY_RETURN) {
-    Navigate(address_->GetText());
+    const std::u16string text(address_->GetText());
+    if (completion_ && completion_->first == text) {
+      OpenSuggestion(completion_->second);
+      return true;
+    }
+    HideSuggestions();
+    Navigate(text);
     return true;
   }
   if (key_event.key_code() == ui::VKEY_ESCAPE) {
+    if (suggestions_->visible()) {
+      // First what was typed, without the list or a completion.
+      const std::u16string typed = typed_;
+      HideSuggestions();
+      address_->SetText(typed);
+      return true;
+    }
     address_->Revert();
     shell_->web_contents()->Focus();
+    return true;
+  }
+  if ((key_event.key_code() == ui::VKEY_DOWN ||
+       key_event.key_code() == ui::VKEY_UP) &&
+      suggestions_->visible()) {
+    const Suggestion* selected =
+        suggestions_->Move(key_event.key_code() == ui::VKEY_DOWN ? 1 : -1);
+    completion_.reset();
+    address_->SetText(selected ? base::UTF8ToUTF16(selected->url.spec())
+                               : typed_);
+    address_->SetSelectedRange(gfx::Range(address_->GetText().size()));
     return true;
   }
   return false;
 }
 
 void WindowView::ExecuteCommand(int command_id, int event_flags) {
+  if (command_id >= kBookmarkFirst &&
+      command_id < kBookmarkFirst + static_cast<int>(bookmark_urls_.size())) {
+    OpenSuggestion(bookmark_urls_[command_id - kBookmarkFirst]);
+    return;
+  }
   if (command_id >= kForgetFirst &&
       command_id < kForgetFirst + static_cast<int>(forget_.size())) {
     static_cast<LrbPermissionManager*>(shell_->web_contents()
@@ -1316,6 +1544,13 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
     case kReopenClosed:
       actions_.reopen_closed.Run();
       break;
+    case kPrint:
+      PrintToPdf(shell_->web_contents());
+      break;
+    case kDarkPages:
+      SetDarkPages(shell_->web_contents()->GetBrowserContext(),
+                   !DarkPagesOn());
+      break;
     case kClosePage:
       CloseSoon();
       break;
@@ -1327,6 +1562,10 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
           FROM_HERE, base::BindOnce(&LrbPlatformDelegate::CloseAllByUser));
       break;
   }
+}
+
+bool WindowView::IsCommandIdChecked(int command_id) const {
+  return command_id == kDarkPages && DarkPagesOn();
 }
 
 bool WindowView::GetAcceleratorForCommandId(
@@ -1345,6 +1584,9 @@ bool WindowView::GetAcceleratorForCommandId(
     case kReopenClosed:
       *accelerator = ui::Accelerator(
           ui::VKEY_T, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN);
+      return true;
+    case kPrint:
+      *accelerator = ui::Accelerator(ui::VKEY_P, ui::EF_CONTROL_DOWN);
       return true;
   }
   return false;

@@ -55,6 +55,10 @@ inline constexpr char kResume[] = "lrb-resume";
 inline constexpr char kMultiProcess[] = "lrb-multi-process";
 inline constexpr char kGpu[] = "lrb-gpu";
 
+// Dark pages on every site, whatever each site's choice (measuring, and
+// for whoever wants them everywhere).
+inline constexpr char kDarkPages[] = "lrb-dark-pages";
+
 // Show only the settings window, then exit (started by the coordinator: the
 // one process allowed to write the settings). "first-start": with the first
 // start's question about the GPU.
