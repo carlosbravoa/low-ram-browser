@@ -14,6 +14,8 @@
 #include "base/logging.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
+#include "lrb/browser/site.h"
+#include "url/gurl.h"
 
 namespace lrb {
 
@@ -41,6 +43,21 @@ ZoomLevels::ZoomLevels(content::BrowserContext* context,
 }
 
 ZoomLevels::~ZoomLevels() = default;
+
+// static
+void ZoomLevels::ForgetSite(content::BrowserContext* context,
+                            const std::string& site) {
+  content::HostZoomMap* map =
+      content::HostZoomMap::GetDefaultForBrowserContext(context);
+  for (const content::HostZoomMap::ZoomLevelChange& level :
+       map->GetAllZoomLevels()) {
+    if (level.mode == content::HostZoomMap::ZOOM_CHANGED_FOR_HOST &&
+        SiteForUrl(GURL("https://" + level.host + "/")) == site) {
+      // The default level: the map drops the host.
+      map->SetZoomLevelForHost(level.host, 0);
+    }
+  }
+}
 
 void ZoomLevels::OnLoaded(std::optional<std::string> json) {
   if (!json) {

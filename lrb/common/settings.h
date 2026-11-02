@@ -36,6 +36,16 @@ struct Settings {
   // (lean below 1.5 GB of RAM). The coordinator applies it; its
   // --adblock-setting overrides it.
   std::string content_blocking;
+  // How lrb runs (lrb/common/mode.h): "lean", "standard", or empty for
+  // automatic (the coordinator decides by the machine's memory and whether
+  // Chromium's sandbox can run). The coordinator applies it.
+  std::string mode;
+  // The site's memory after the page title in window titles (a developer's
+  // view; off by default).
+  bool show_memory = false;
+  // Downloads ask where to save (the file picker); off: straight to the
+  // Downloads folder, the bar says where.
+  bool ask_downloads = true;
 
   // Blocking: reads and writes the file. Read() parses no URLs: it runs
   // at startup, before URL schemes are registered.

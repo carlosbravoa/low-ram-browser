@@ -7,6 +7,7 @@
 
 #include <cstdint>
 
+#include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_multi_source_observation.h"
@@ -20,9 +21,16 @@ class BrowserContext;
 
 namespace lrb {
 
+// Where a download is suggested to go, and whether to ask (the setting).
+struct SuggestedTarget {
+  base::FilePath path;
+  bool ask = true;
+};
+
 // Downloads ask where to save, with the system file picker,
 // suggesting the Downloads folder and the file's name. With
-// no picker to ask (no session bus or portal: a kiosk, a bare Pi), they go
+// no picker to ask (no session bus or portal: a kiosk, a bare Pi), or when
+// the user turned asking off in the settings (ask_downloads), they go
 // to the Downloads folder under a free name, and the bar says where.
 // content_shell cancelled every download on Linux. Progress shows in the
 // bar of the window the download came from.
@@ -61,7 +69,7 @@ class LrbDownloadManagerDelegate : public content::DownloadManagerDelegate,
  private:
   void OnNameGenerated(uint32_t id,
                        download::DownloadTargetCallback callback,
-                       const base::FilePath& suggested);
+                       SuggestedTarget target);
 
   raw_ptr<content::DownloadManager> manager_;
   base::ScopedMultiSourceObservation<download::DownloadItem,

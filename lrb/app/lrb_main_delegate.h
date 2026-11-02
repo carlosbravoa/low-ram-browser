@@ -31,6 +31,7 @@ class LrbMainDelegate : public content::ContentMainDelegate {
 
   // content::ContentMainDelegate:
   std::optional<int> BasicStartupComplete() override;
+  void ZygoteForked() override;
   bool ShouldCreateFeatureList(InvokedIn invoked_in) override;
   bool ShouldInitializeMojo(InvokedIn invoked_in) override;
   void PreSandboxStartup() override;

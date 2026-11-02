@@ -13,8 +13,10 @@
 #include "third_party/blink/public/web/web_css_origin.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/platform/web_security_origin.h"
 #include "third_party/blink/public/web/web_script_source.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace lrb {
 
@@ -27,6 +29,12 @@ void CosmeticFilter::DidCreateDocumentElement() {
   blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
   blink::WebDocument document = frame->GetDocument();
   const GURL url(document.Url());
+  // Blocking turned off for the page's site (standard mode) covers its
+  // iframes too, in whatever process they are.
+  if (!ContentBlocker::EnabledFor(
+          url::Origin(frame->Top()->GetSecurityOrigin()).GetURL())) {
+    return;
+  }
   // Scriptlets first: they must patch the page's globals before its own
   // scripts run (the document element exists, no script has run yet).
   const std::string script = ContentBlocker::Scriptlets(url);

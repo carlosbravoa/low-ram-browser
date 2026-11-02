@@ -26,6 +26,7 @@ class SiteInstance;
 
 namespace lrb {
 
+class HistoryRecorder;
 class LrbPlatformDelegate;
 
 // One page: a WebContents and the delegate that answers for it. A tab of a
@@ -158,9 +159,14 @@ class Shell : public content::WebContentsDelegate,
 
   // content::WebContentsObserver:
   void TitleWasSet(content::NavigationEntry* entry) override;
+  // A window waiting for its page (a hand-off) goes on screen.
+  void DidFirstVisuallyNonEmptyPaint() override;
 
   std::unique_ptr<content::JavaScriptDialogManager> dialog_manager_;
   std::unique_ptr<content::WebContents> web_contents_;
+  // The page's visits, into the profile's history (history.h). After
+  // web_contents_: destroyed first, while the page still exists.
+  std::unique_ptr<HistoryRecorder> history_recorder_;
   bool is_fullscreen_ = false;
 };
 

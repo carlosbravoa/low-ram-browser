@@ -109,29 +109,46 @@ void KeyringBroker::Handle(int fd,
       return;
     }
   }
-  if (site.empty() || !IsValidSite(site)) {
+  std::string own_site = site;
+  if (site == "*") {
+    // The standard instance (every site in one profile, Chromium's site
+    // isolation): password requests name their site last, and the checks
+    // below hold the origin to it. Autofill needs no site.
+    if (command.starts_with("pw-")) {
+      if (decoded.empty()) {
+        refuse();
+        return;
+      }
+      own_site = decoded.back();
+      decoded.pop_back();
+    }
+  } else if (site.empty() || !IsValidSite(site)) {
     refuse();  // not a site's instance: the resolver, or unknown
     return;
   }
+  if (command.starts_with("pw-") && !IsValidSite(own_site)) {
+    refuse();
+    return;
+  }
   if (command == "pw-list" && decoded.size() == 1 &&
-      OriginOfSite(decoded[0], site)) {
+      OriginOfSite(decoded[0], own_site)) {
     Start(std::move(job),
-          {"list", "password", "username", "site=" + site,
+          {"list", "password", "username", "site=" + own_site,
            "origin=" + decoded[0]},
           "");
   } else if (command == "pw-get" && decoded.size() == 2 &&
-             OriginOfSite(decoded[0], site) && !decoded[1].empty() &&
+             OriginOfSite(decoded[0], own_site) && !decoded[1].empty() &&
              decoded[1].size() <= kMaxUser) {
     Start(std::move(job),
-          {"get", "password", "site=" + site, "origin=" + decoded[0],
+          {"get", "password", "site=" + own_site, "origin=" + decoded[0],
            "username=" + decoded[1]},
           "");
   } else if (command == "pw-save" && decoded.size() == 3 &&
-             OriginOfSite(decoded[0], site) && !decoded[1].empty() &&
+             OriginOfSite(decoded[0], own_site) && !decoded[1].empty() &&
              decoded[1].size() <= kMaxUser && !decoded[2].empty() &&
              decoded[2].size() <= kMaxPassword) {
     Start(std::move(job),
-          {"store", "password", "site=" + site, "origin=" + decoded[0],
+          {"store", "password", "site=" + own_site, "origin=" + decoded[0],
            "username=" + decoded[1]},
           decoded[2]);
   } else if (command == "af-get" && decoded.empty()) {

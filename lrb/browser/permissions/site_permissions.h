@@ -49,6 +49,9 @@ class SitePermissions {
                           blink::PermissionType type) const;
   void Set(const url::Origin& origin, blink::PermissionType type, bool allowed);
   void Forget(const url::Origin& origin, blink::PermissionType type);
+  // Every answer given to an origin of `site` (a registrable domain, as
+  // SiteForUrl gives it): "Forget this site's data".
+  void ForgetSite(const std::string& site);
   base::WeakPtr<SitePermissions> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }

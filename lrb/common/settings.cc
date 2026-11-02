@@ -84,6 +84,12 @@ Settings Settings::Read() {
       level && (*level == "full" || *level == "lean" || *level == "off")) {
     settings.content_blocking = *level;
   }
+  if (const std::string* mode = dict->FindString("mode");
+      mode && (*mode == "lean" || *mode == "standard")) {
+    settings.mode = *mode;
+  }
+  settings.show_memory = dict->FindBool("show_memory").value_or(false);
+  settings.ask_downloads = dict->FindBool("ask_downloads").value_or(true);
   return settings;
 }
 
@@ -113,6 +119,11 @@ bool Settings::Write(const Settings& settings) {
   if (!settings.content_blocking.empty()) {
     dict.Set("content_blocking", settings.content_blocking);
   }
+  if (!settings.mode.empty()) {
+    dict.Set("mode", settings.mode);
+  }
+  dict.Set("show_memory", settings.show_memory);
+  dict.Set("ask_downloads", settings.ask_downloads);
   std::optional<std::string> json = base::WriteJson(dict);
   const base::FilePath file = File();
   return json && base::CreateDirectory(file.DirName()) &&

@@ -10,15 +10,26 @@
 
 namespace lrb {
 
-// Keeps an instance to its one site. A user-initiated main-frame navigation
-// to another site (typed URL, link click) is cancelled here and opened in
-// that site's own window instead. Navigations within a flow (scripts, form
-// submissions, server redirects, back/forward, reload) pass through, so
-// logins and payments that bounce through other sites keep working.
+// Lean mode: keeps an instance to its one site. A user-initiated main-frame
+// navigation to another site (typed URL, link click) is cancelled here and
+// opened in that site's own window instead. Navigations within a flow
+// (scripts, form submissions, server redirects, back/forward, reload) pass
+// through, so logins and payments that bounce through other sites keep
+// working. Another site in a new window nobody asked for (no opener, no
+// click) is blocked.
+//
+// Leaving the site from a window with one tab hands it over: the other
+// site's window opens in its place, and this one hides once that one is on
+// screen (the coordinator's "hide <n>"; without a coordinator, after a
+// moment). The instance stays alive, parked, so Back returns to it at once.
+// From a window with several tabs, the other site's window opens beside it
+// and the tab stays.
 //
 // An instance without a site yet takes the site of its first http(s) page.
 // Under a coordinator it instead hands that page to the coordinator and
 // closes, so the page opens with its site's profile.
+//
+// Standard mode: every site in one instance; everything proceeds.
 class LrbContentBrowserClient;
 
 class SiteWindowThrottle : public content::NavigationThrottle {

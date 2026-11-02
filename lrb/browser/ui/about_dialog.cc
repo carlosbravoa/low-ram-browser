@@ -20,6 +20,7 @@
 #include "components/version_info/version_info.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/site.h"
+#include "lrb/common/mode.h"
 #include "lrb/common/version.h"
 #include "net/base/filename_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -79,6 +80,10 @@ class AboutView : public views::View {
     Text(base::UTF8ToUTF16(base::StrCat(
         {"Chromium ", version_info::GetVersionNumber(),
          released.empty() ? "" : ", released to Stable on ", released})));
+    Text(StandardMode()
+             ? u"Running in standard mode: Chromium's sandbox and site "
+               u"isolation"
+             : u"Running in lean mode: one confined process per site");
     Note(u"Chromium's security fixes reach lrb with its releases. Compare "
          u"with Chromium's latest release:");
     AddLink(u"Chromium releases for Linux",

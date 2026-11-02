@@ -43,6 +43,7 @@ constexpr const char* kPerInstanceSwitches[] = {
     switches::kBackUrl,
     switches::kRestoreLeft,
     switches::kResume,
+    switches::kHandoff,
     "remote-debugging-port",
     "remote-debugging-pipe",
 };

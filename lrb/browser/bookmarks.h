@@ -14,8 +14,9 @@
 namespace lrb {
 
 // Bookmarks and address-bar suggestions, asked of the coordinator, which
-// keeps them for all sites (lrb/coordinator/bookmarks.h). Nothing is kept
-// in this process. Without a coordinator there are none.
+// keeps them for all sites (lrb/coordinator/bookmarks.h). Nothing of them
+// is kept in this process. Without a coordinator there are none, except the
+// suggestions from this profile's own history (history.h).
 struct Suggestion {
   GURL url;
   std::u16string title;  // empty for a visited site
@@ -24,7 +25,8 @@ struct Suggestion {
 using SuggestionsCallback =
     base::OnceCallback<void(std::vector<Suggestion>)>;
 
-// What the address bar offers for `text` (best first).
+// What the address bar offers for `text` (best first): the coordinator's
+// bookmarks and sites, then pages from this profile's history, 8 at most.
 void Suggest(const std::u16string& text, SuggestionsCallback done);
 // All bookmarks, in the order added.
 void ListBookmarks(SuggestionsCallback done);

@@ -192,7 +192,12 @@ constexpr uint32_t kAuditArch = AUDIT_ARCH_AARCH64;
 #error "lrb confines x86-64 and arm64 only"
 #endif
 
-bool Seccomp(std::string* error) {
+// Denied unless Chromium's sandbox runs inside (ConfinePolicy::allow_sandbox).
+bool SandboxCall(int nr) {
+  return nr == __NR_unshare || nr == __NR_chroot;
+}
+
+bool Seccomp(bool allow_sandbox, std::string* error) {
   constexpr uint32_t kErrno = SECCOMP_RET_ERRNO | EPERM;
   std::vector<sock_filter> filter = {
       // Another architecture's system call numbers: refuse outright.
@@ -207,6 +212,9 @@ bool Seccomp(std::string* error) {
   filter.push_back(BPF_STMT(BPF_RET | BPF_K, kErrno));
 #endif
   for (int nr : kDenied) {
+    if (allow_sandbox && SandboxCall(nr)) {
+      continue;
+    }
     filter.push_back(
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1));
     filter.push_back(BPF_STMT(BPF_RET | BPF_K, kErrno));
@@ -241,7 +249,7 @@ bool Confine(const ConfinePolicy& policy, std::string* error) {
   } else {
     *error = "no Landlock in this kernel: file access not confined";
   }
-  return Seccomp(error);
+  return Seccomp(policy.allow_sandbox, error);
 }
 
 }  // namespace lrb::coordinator

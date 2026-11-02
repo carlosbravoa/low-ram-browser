@@ -160,11 +160,14 @@ std::vector<std::string> Words(const std::string& text) {
 
 }  // namespace
 
-FileBroker::FileBroker(std::string picker, std::string downloads_dir,
-                       Reply reply)
+FileBroker::FileBroker(std::string picker,
+                       std::string downloads_dir,
+                       Reply reply,
+                       AskDownloads ask_downloads)
     : picker_(std::move(picker)),
       downloads_dir_(std::move(downloads_dir)),
-      reply_(std::move(reply)) {}
+      reply_(std::move(reply)),
+      ask_downloads_(std::move(ask_downloads)) {}
 
 FileBroker::~FileBroker() {
   for (auto& [fd, pick] : picks_) {
@@ -233,6 +236,10 @@ void FileBroker::Handle(int fd,
     pick.id = id;
     pick.save = true;
     pick.name = SafeName(words.size() > 1 ? Decode(words[1]) : "");
+    if (ask_downloads_ && !ask_downloads_()) {
+      SaveToDownloads(pick);  // the user chose not to be asked
+      return;
+    }
     StartPicker(std::move(pick), false);
   } else if (command == "save-done") {
     SaveDone(fd, profile, id);
@@ -361,11 +368,7 @@ void FileBroker::Finish(Pick& pick) {
   } else if (pick.save) {
     // No picker: the Downloads folder, under a free name, as lrb did
     // without one.
-    MakeDirs(downloads_dir_);
-    const std::string target = FreePath(downloads_dir_, pick.name);
-    saves_[{pick.profile, pick.id}] = target;
-    reply_(pick.client_fd,
-           "save-target " + pick.id + " " + FileUri(target) + " auto");
+    SaveToDownloads(pick);
   } else {
     reply_(pick.client_fd, "picked " + pick.id + " unavailable");
   }
@@ -391,6 +394,14 @@ void FileBroker::FinishOpen(Pick& pick, const std::vector<std::string>& paths) {
     }
   }
   reply_(pick.client_fd, line);
+}
+
+void FileBroker::SaveToDownloads(const Pick& pick) {
+  MakeDirs(downloads_dir_);
+  const std::string target = FreePath(downloads_dir_, pick.name);
+  saves_[{pick.profile, pick.id}] = target;
+  reply_(pick.client_fd,
+         "save-target " + pick.id + " " + FileUri(target) + " auto");
 }
 
 void FileBroker::FinishSave(Pick& pick, const std::vector<std::string>& paths) {

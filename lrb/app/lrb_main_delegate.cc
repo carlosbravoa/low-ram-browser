@@ -34,6 +34,7 @@
 #include "lrb/common/safety_list.h"
 #include "lrb/common/lrb_content_client.h"
 #include "lrb/common/lrb_switches.h"
+#include "lrb/common/mode.h"
 #include "lrb/common/settings.h"
 #include "lrb/renderer/lrb_content_renderer_client.h"
 #include "media/base/media_switches.h"
@@ -86,48 +87,57 @@ void AddSwitchUnlessSet(base::CommandLine& command_line, const char* name) {
   }
 }
 
-// lrb's defaults where they differ from content_shell's: the configuration
-// measured leanest, so a plain
-// `lrb <url>` gets it. Each only when the command line doesn't say
-// otherwise.
+// lrb's defaults where they differ from content_shell's, each only when the
+// command line doesn't say otherwise. Lean mode (lrb/common/mode.h): the
+// configuration measured leanest, so a plain `lrb <url>` gets it. Standard
+// mode keeps Chromium's process model and sandbox, and only the defaults
+// that save memory without weakening them.
 void ApplyDefaults(base::CommandLine& command_line) {
-  // One process per window: the renderer, network
-  // and GPU work in the browser process. --single-process alone still
-  // starts two zygotes (~45 MB). Chromium's sandbox needs separate
-  // renderers; in their place: the V8 sandbox, and Landlock + seccomp
-  // around the whole instance (docs/design.md, "Open questions"). --lrb-multi-process: Chromium's
-  // usual processes, for debugging.
+  const bool standard = StandardMode();
   if (!command_line.HasSwitch(switches::kMultiProcess)) {
-    AddSwitchUnlessSet(command_line, ::switches::kSingleProcess);
-    AddSwitchUnlessSet(command_line, ::switches::kNoZygote);
-    AddSwitchUnlessSet(command_line, sandbox::policy::switches::kNoSandbox);
+    // Lean: one process per window, the renderer in the browser process.
+    // --single-process alone still starts two zygotes (~45 MB). Chromium's
+    // sandbox needs separate renderers; in their place: the V8 sandbox, and
+    // Landlock + seccomp around the whole instance (docs/design.md). Standard
+    // mode keeps zygotes and sandboxed renderers, locked to their site.
+    // --lrb-multi-process: Chromium's usual processes, for debugging.
+    if (!standard) {
+      AddSwitchUnlessSet(command_line, ::switches::kSingleProcess);
+      AddSwitchUnlessSet(command_line, ::switches::kNoZygote);
+      AddSwitchUnlessSet(command_line, sandbox::policy::switches::kNoSandbox);
+    }
+    // Both modes: GPU, network and audio work in the browser process. Each
+    // service process costs tens of MB, and none of them runs a site's
+    // code, which is what the renderer sandbox is for.
     AddSwitchUnlessSet(command_line, ::switches::kInProcessGPU);
     AddToListSwitch(command_line, ::switches::kEnableFeatures,
                     ::switches::kDisableFeatures, "NetworkServiceInProcess2");
     AddToListSwitch(command_line, ::switches::kDisableFeatures,
                     ::switches::kEnableFeatures, "AudioServiceOutOfProcess");
   }
-  // Software compositing: ~45 MB less than the GPU path in Phase 0.
-  // Whether 2 GB laptops and the Pi want their GPUs is still open
-  // (docs/design.md, "Open questions"); --lrb-gpu keeps it for that comparison.
-  // The user's choice in the settings (lrb/common/settings.h); unset:
-  // software, until they choose.
+  // Software compositing: ~45 MB less than the GPU path in Phase 0. The
+  // user's choice in the settings (lrb/common/settings.h); unset: software.
+  // --lrb-gpu keeps the GPU for comparisons.
   if (!command_line.HasSwitch(switches::kGpu) &&
       !Settings::Read().gpu.value_or(false)) {
     AddSwitchUnlessSet(command_line, ::switches::kDisableGpu);
   }
-  AddSwitchUnlessSet(command_line, ::switches::kEnableLowEndDeviceMode);
-  // Each window keeps one page alive; a back-forward cache would keep a
-  // second (discarding manages background windows instead).
-  AddToListSwitch(command_line, ::switches::kDisableFeatures,
-                  ::switches::kEnableFeatures, "BackForwardCache");
-  // V8 favours size over speed.
-  std::string js_flags = command_line.GetSwitchValueASCII(blink::switches::kJavaScriptFlags);
-  if (js_flags.find("optimize-for-size") == std::string::npos) {
-    command_line.AppendSwitchASCII(
-        blink::switches::kJavaScriptFlags,
-        js_flags.empty() ? "--optimize-for-size"
-                         : js_flags + " --optimize-for-size");
+  if (!standard) {
+    AddSwitchUnlessSet(command_line, ::switches::kEnableLowEndDeviceMode);
+    // Each window keeps one page alive; a back-forward cache would keep a
+    // second (discarding manages background windows instead). Standard mode
+    // has the memory for instant Back.
+    AddToListSwitch(command_line, ::switches::kDisableFeatures,
+                    ::switches::kEnableFeatures, "BackForwardCache");
+    // V8 favours size over speed.
+    std::string js_flags =
+        command_line.GetSwitchValueASCII(blink::switches::kJavaScriptFlags);
+    if (js_flags.find("optimize-for-size") == std::string::npos) {
+      command_line.AppendSwitchASCII(
+          blink::switches::kJavaScriptFlags,
+          js_flags.empty() ? "--optimize-for-size"
+                           : js_flags + " --optimize-for-size");
+    }
   }
 
   // Media waits for the user: no autoplay, muted or not, before the page
@@ -198,21 +208,48 @@ std::optional<int> LrbMainDelegate::BasicStartupComplete() {
         command_line.GetSwitchValuePath(lrb::switches::kUserDataDir));
   }
   // Before any request, and while blocking file access is still allowed. In
-  // single-process mode (lrb's design) the renderer is this process.
+  // lean mode the renderer is this process. In standard mode the browser
+  // passes the switch to the zygote, which loads the engine before its
+  // sandbox starts, so every renderer it forks shares it.
   if (command_line.HasSwitch(lrb::switches::kAdblockFile)) {
     ContentBlocker::Load(command_line.GetSwitchValuePath(lrb::switches::kAdblockFile));
     // The user turned blocking off for this site (its profile says so).
     const base::FilePath profile =
         command_line.GetSwitchValuePath(lrb::switches::kUserDataDir);
-    if (!profile.empty() &&
+    if (!StandardMode() && !profile.empty() &&
         base::PathExists(profile.Append(lrb::kBlockingOffFile))) {
       ContentBlocker::SetEnabled(false);
+    }
+  }
+  // Standard mode: the sites blocking is off for. The browser reads them
+  // from its profile; its renderers get them on their command line.
+  if (StandardMode()) {
+    const base::FilePath profile =
+        command_line.GetSwitchValuePath(lrb::switches::kUserDataDir);
+    if (!command_line.HasSwitch(::switches::kProcessType)) {
+      if (!profile.empty()) {
+        ContentBlocker::ReadDisabledSites(
+            profile.Append(lrb::kBlockingOffSitesFile));
+      }
+    } else {
+      ContentBlocker::SetDisabledSitesFromSwitch(
+          command_line.GetSwitchValueASCII(lrb::switches::kBlockingOffSites));
     }
   }
   if (command_line.HasSwitch(lrb::switches::kSafetyFile)) {
     SafetyList::Load(command_line.GetSwitchValuePath(lrb::switches::kSafetyFile));
   }
   return std::nullopt;
+}
+
+void LrbMainDelegate::ZygoteForked() {
+  // A renderer forked from the zygote has its own command line now (not the
+  // zygote's): the sites blocking is off for, as of its launch.
+  if (StandardMode()) {
+    ContentBlocker::SetDisabledSitesFromSwitch(
+        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            lrb::switches::kBlockingOffSites));
+  }
 }
 
 bool LrbMainDelegate::ShouldCreateFeatureList(InvokedIn invoked_in) {

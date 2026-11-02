@@ -4,6 +4,7 @@
 
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -28,6 +29,8 @@
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/media_capture_devices.h"
 #include "content/public/browser/media_stream_request.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "lrb/browser/shell.h"
@@ -75,7 +78,21 @@ GURL& NextWindowBackUrl() {
   return *back;
 }
 
+base::OnceClosure& NextWindowShown() {
+  static base::NoDestructor<base::OnceClosure> shown;
+  return *shown;
+}
+
+// The setting: set before the platform starts (lrb_main_delegate.cc).
+bool g_show_memory = false;
+
 constexpr base::TimeDelta kMemoryPeriod = base::Seconds(5);
+// A hand-off's window shows this long after its page loaded if it hasn't
+// painted (a page that paints nothing, or no paint while not on screen).
+constexpr base::TimeDelta kShowAfterLoad = base::Milliseconds(1500);
+// ...and at most this long after it opened, loaded or not: a page whose
+// server never answers must not leave the user with no window to see.
+constexpr base::TimeDelta kShowAtMost = base::Seconds(5);
 
 // This process's PSS in MB (/proc/self/smaps_rollup), or nothing if it
 // can't be read. Blocks: on the thread pool.
@@ -226,10 +243,37 @@ void LrbPlatformDelegate::Initialize() {
     screen_ = views::CreateDesktopScreen();
   }
   views_delegate_ = std::make_unique<LrbViewsDelegate>();
-  memory_timer_.Start(FROM_HERE, kMemoryPeriod,
-                      base::BindRepeating(&LrbPlatformDelegate::UpdateMemory,
-                                          base::Unretained(this)));
-  UpdateMemory();
+  ApplyShowMemory();
+}
+
+// static
+void LrbPlatformDelegate::SetShowMemory(bool show) {
+  if (g_show_memory == show) {
+    return;
+  }
+  g_show_memory = show;
+  if (g_delegate && g_delegate->views_delegate_) {
+    g_delegate->ApplyShowMemory();
+  }
+}
+
+void LrbPlatformDelegate::ApplyShowMemory() {
+  if (!g_show_memory) {
+    // Nothing read every few seconds unless it is shown.
+    memory_timer_.Stop();
+    memory_mb_.reset();
+  } else if (!memory_timer_.IsRunning()) {
+    memory_timer_.Start(FROM_HERE, kMemoryPeriod,
+                        base::BindRepeating(&LrbPlatformDelegate::UpdateMemory,
+                                            base::Unretained(this)));
+    UpdateMemory();
+  }
+  for (const std::unique_ptr<Window>& window : windows_) {
+    if (!window->closing && window->active < window->tabs.size()) {
+      window->widget->widget_delegate()->SetTitle(
+          WindowTitle(TitleOf(window->tabs[window->active])));
+    }
+  }
 }
 
 void LrbPlatformDelegate::UpdateMemory() {
@@ -246,19 +290,17 @@ void LrbPlatformDelegate::OnMemoryRead(std::optional<int> megabytes) {
   }
   memory_mb_ = megabytes;
   for (const std::unique_ptr<Window>& window : windows_) {
-    if (window->closing) {
+    if (window->closing || window->active >= window->tabs.size()) {
       continue;
     }
-    if (Shell* shell = ViewOf(window.get())->shell()) {
-      window->widget->widget_delegate()->SetTitle(
-          WindowTitle(shell->web_contents()->GetTitle()));
-    }
+    window->widget->widget_delegate()->SetTitle(
+        WindowTitle(TitleOf(window->tabs[window->active])));
   }
 }
 
 std::u16string LrbPlatformDelegate::WindowTitle(
     const std::u16string& page_title) const {
-  if (!memory_mb_) {
+  if (!g_show_memory || !memory_mb_) {
     return page_title;
   }
   return base::StrCat({page_title, u" \u2014 ",
@@ -314,6 +356,16 @@ bool LrbPlatformDelegate::Exists(const Window* window) const {
 }
 
 LrbPlatformDelegate::Window* LrbPlatformDelegate::LastActive() {
+  // A visible window first: a new page shouldn't land in a hidden one when
+  // the user is looking at another.
+  if (last_active_ && Exists(last_active_) && !last_active_->hidden) {
+    return last_active_;
+  }
+  for (const std::unique_ptr<Window>& window : windows_) {
+    if (!window->closing && !window->hidden) {
+      return window.get();
+    }
+  }
   if (last_active_ && Exists(last_active_)) {
     return last_active_;
   }
@@ -323,6 +375,166 @@ LrbPlatformDelegate::Window* LrbPlatformDelegate::LastActive() {
     }
   }
   return nullptr;
+}
+
+std::u16string LrbPlatformDelegate::TitleOf(const Tab& tab) const {
+  if (!tab.shell) {
+    return tab.title;
+  }
+  // A sleeping page shows about:blank: the title it had stays.
+  const ActivityTracker* tracker =
+      ActivityTracker::FromWebContents(tab.shell->web_contents());
+  if (tracker && tracker->discarded() && !tab.title.empty()) {
+    return tab.title;
+  }
+  return tab.shell->web_contents()->GetTitle();
+}
+
+void LrbPlatformDelegate::ReportVisibility() {
+  if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
+    client->ReportWindowsHidden(AllWindowsHidden());
+  }
+}
+
+void LrbPlatformDelegate::Unhide(Window* window) {
+  if (!window->hidden) {
+    return;
+  }
+  window->hidden = false;
+  window->widget->Show();
+  ReportVisibility();
+  UpdateTabs(window);  // its tabs are no longer background tabs
+}
+
+void LrbPlatformDelegate::ShowWhenPainted(Window* window) {
+  window->shown_timer.Stop();
+  window->shown_cap_timer.Stop();
+  window->shown_shell = nullptr;
+  base::OnceClosure shown = std::move(window->on_shown);
+  if (!window->hidden && !window->widget->IsVisible()) {
+    window->widget->GetNativeWindow()->GetHost()->Show();
+    window->widget->Show();
+    ReportVisibility();
+  }
+  if (shown) {
+    std::move(shown).Run();
+  }
+}
+
+// static
+bool LrbPlatformDelegate::HideWindowOf(content::WebContents* contents) {
+  Shell* shell = contents ? Shell::FromWebContents(contents) : nullptr;
+  Window* window = g_delegate && shell ? g_delegate->WindowOf(shell) : nullptr;
+  if (!window || window->closing) {
+    return false;
+  }
+  if (!window->hidden) {
+    window->hidden = true;
+    window->widget->Hide();
+    g_delegate->ReportVisibility();
+    g_delegate->UpdateTabs(window);  // its tabs are background tabs now
+  }
+  return true;
+}
+
+// static
+bool LrbPlatformDelegate::AllWindowsHidden() {
+  if (!g_delegate) {
+    return false;
+  }
+  bool any = false;
+  for (const std::unique_ptr<Window>& window : g_delegate->windows_) {
+    if (window->closing) {
+      continue;
+    }
+    if (!window->hidden) {
+      return false;
+    }
+    any = true;
+  }
+  return any;
+}
+
+// static
+bool LrbPlatformDelegate::ShowExisting(const GURL& url,
+                                       std::optional<gfx::Rect> bounds) {
+  if (!g_delegate || !url.is_valid()) {
+    return false;
+  }
+  // The page a tab shows: what it last committed, else what it is loading
+  // (a tab not loaded, or sleeping: the address it keeps).
+  auto url_of = [](const Tab& tab) -> GURL {
+    if (!tab.shell) {
+      return tab.url;
+    }
+    content::WebContents* contents = tab.shell->web_contents();
+    const ActivityTracker* tracker = ActivityTracker::FromWebContents(contents);
+    if (tracker && tracker->discarded()) {
+      return tab.url;
+    }
+    GURL shown = contents->GetLastCommittedURL();
+    if (shown.is_empty() || shown.IsAboutBlank()) {
+      content::NavigationEntry* pending =
+          contents->GetController().GetPendingEntry();
+      shown = pending ? pending->GetURL() : contents->GetVisibleURL();
+    }
+    return shown;
+  };
+  Window* found = nullptr;
+  size_t index = 0;
+  // An exact match first, else one differing only in the fragment.
+  for (int pass = 0; pass < 2 && !found; ++pass) {
+    for (const std::unique_ptr<Window>& window : g_delegate->windows_) {
+      if (window->closing) {
+        continue;
+      }
+      for (size_t i = 0; i < window->tabs.size() && !found; ++i) {
+        const GURL shown = url_of(window->tabs[i]);
+        if (pass == 0 ? shown == url
+                      : shown.GetWithoutRef() == url.GetWithoutRef()) {
+          found = window.get();
+          index = i;
+        }
+      }
+      if (found) {
+        break;
+      }
+    }
+  }
+  if (!found) {
+    return false;
+  }
+  // The caller reports the hand-off at once: a tab loading now must not
+  // take it (it would report it twice, or a later window would).
+  NextWindowShown().Reset();
+  g_delegate->Activate(found, index);
+  if (!g_delegate->Exists(found)) {
+    return true;
+  }
+  if (bounds) {
+    // `bounds` is the page's: the window is that plus its bar and frame.
+    const gfx::Rect current = found->widget->GetWindowBoundsInScreen();
+    WindowView* view = g_delegate->ViewOf(found);
+    const gfx::Size page =
+        view->shell() ? view->shell()->web_contents()->GetContainerBounds().size()
+                      : found->content_size;
+    gfx::Size size = bounds->size();
+    size.Enlarge(std::max(0, current.width() - page.width()),
+                 std::max(0, current.height() - page.height()));
+    found->widget->SetBounds(gfx::Rect(bounds->origin(), size));
+  }
+  g_delegate->Unhide(found);
+  if (found->on_shown) {
+    g_delegate->ShowWhenPainted(found);  // asked for: on screen now
+  }
+  found->widget->Activate();
+  g_delegate->last_active_ = found;
+  return true;
+}
+
+// static
+void LrbPlatformDelegate::SetNextWindowShown(base::OnceClosure shown) {
+  NextWindowShown() = std::move(shown);
 }
 
 WindowView* LrbPlatformDelegate::ViewOf(Window* window) {
@@ -407,20 +619,26 @@ void LrbPlatformDelegate::CloseAllByUser() {
 }
 
 // static
-void LrbPlatformDelegate::DiscardBackgroundTabs() {
+void LrbPlatformDelegate::DiscardBackgroundTabs(bool critical) {
   if (!g_delegate) {
     return;
   }
   LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
   for (const std::unique_ptr<Window>& window : g_delegate->windows_) {
-    Shell* shown = g_delegate->ViewOf(window.get())->shell();
+    // A hidden window shows nothing: all its tabs are background tabs.
+    Shell* shown =
+        window->hidden ? nullptr : g_delegate->ViewOf(window.get())->shell();
     for (const Tab& tab : window->tabs) {
-      if (!tab.shell || tab.shell == shown || !client ||
-          tab.shell->web_contents()->IsCurrentlyAudible()) {
+      if (!tab.shell || tab.shell == shown || !client) {
         continue;
       }
-      ActivityTracker::CreateForWebContents(tab.shell->web_contents(), *client);
-      ActivityTracker::FromWebContents(tab.shell->web_contents())->Discard();
+      content::WebContents* contents = tab.shell->web_contents();
+      if (contents->IsCurrentlyAudible() ||
+          (!critical && LrbContentBrowserClient::HasUnsavedInput(contents))) {
+        continue;  // music playing; a form being filled in
+      }
+      ActivityTracker::CreateForWebContents(contents, *client);
+      ActivityTracker::FromWebContents(contents)->Discard();
     }
   }
   if (client) {
@@ -431,7 +649,7 @@ void LrbPlatformDelegate::DiscardBackgroundTabs() {
 int LrbPlatformDelegate::BackgroundTabs() {
   int count = 0;
   for (const std::unique_ptr<Window>& window : windows_) {
-    Shell* shown = ViewOf(window.get())->shell();
+    Shell* shown = window->hidden ? nullptr : ViewOf(window.get())->shell();
     for (const Tab& tab : window->tabs) {
       if (!tab.shell || tab.shell == shown) {
         continue;
@@ -596,6 +814,7 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
   DCHECK(!WindowOf(shell));
   const Next next = std::exchange(next_, Next());
   const GURL back = std::exchange(NextWindowBackUrl(), GURL());
+  base::OnceClosure shown = std::exchange(NextWindowShown(), {});
   // A tab, unless asked for a window, or a popup with an opener.
   Window* target = nullptr;
   if (!next.new_window) {
@@ -620,6 +839,19 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
         ++target->active;
       }
     }
+    if (shown) {
+      // A hand-off landing as a tab: reported once the tab has painted.
+      if (target->on_shown) {
+        std::move(target->on_shown).Run();  // the previous one: now
+      }
+      target->on_shown = std::move(shown);
+      target->shown_shell = shell;
+      target->shown_cap_timer.Start(
+          FROM_HERE, kShowAtMost,
+          base::BindOnce(&LrbPlatformDelegate::ShowWhenPainted,
+                         base::Unretained(this), base::Unretained(target)));
+    }
+    Unhide(target);  // a new page in a hidden window: back on screen
     return;  // shown by SetContents()
   }
 
@@ -670,9 +902,10 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
       },
       weak_factory_.GetWeakPtr(), base::Unretained(raw));
   actions.new_window = base::BindRepeating(
-      [](base::WeakPtr<LrbPlatformDelegate> self, Window* window) {
+      [](base::WeakPtr<LrbPlatformDelegate> self, Window* window,
+         const GURL& url) {
         if (self && self->Exists(window)) {
-          self->NewWindow(window);
+          self->NewWindow(window, url);
         }
       },
       weak_factory_.GetWeakPtr(), base::Unretained(raw));
@@ -704,8 +937,19 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
   // Closing the window (its close button, the window manager) closes its
   // tabs; the last one's Shell destroys the window through CleanUp().
   ArmCloseButton(raw);
+  if (shown) {
+    // Replacing another site's window: on screen once its page has
+    // painted (SetContents, DidFirstVisuallyNonEmptyPaint, SetIsLoading).
+    raw->on_shown = std::move(shown);
+    raw->shown_shell = shell;
+    raw->shown_cap_timer.Start(
+        FROM_HERE, kShowAtMost,
+        base::BindOnce(&LrbPlatformDelegate::ShowWhenPainted,
+                       base::Unretained(this), base::Unretained(raw)));
+  }
   windows_.push_back(std::move(window));
   last_active_ = raw;
+  ReportVisibility();
   // Shown in SetContents(), once the page is in, so the window doesn't
   // change size right after appearing.
 }
@@ -720,6 +964,18 @@ void LrbPlatformDelegate::CleanUp(Shell* shell) {
   Window* window = WindowOf(shell);
   DCHECK(window);
   const size_t index = *TabOf(window, shell);
+  if (window->shown_shell == shell) {
+    // The page a hand-off waited for is going: with other tabs, the window
+    // shows now; alone, the window goes (the coordinator gives up waiting).
+    if (window->tabs.size() > 1) {
+      ShowWhenPainted(window);
+    } else {
+      window->shown_timer.Stop();
+      window->shown_cap_timer.Stop();
+      window->on_shown.Reset();
+      window->shown_shell = nullptr;
+    }
+  }
   RememberClosed(window->tabs[index]);
   if (window->tabs.size() > 1) {
     // One tab of several: the window stays.
@@ -760,6 +1016,7 @@ void LrbPlatformDelegate::CleanUp(Shell* shell) {
   std::erase_if(windows_, [window](const std::unique_ptr<Window>& w) {
     return w.get() == window;
   });
+  ReportVisibility();
 }
 
 void LrbPlatformDelegate::Activate(Window* window, size_t index) {
@@ -801,8 +1058,7 @@ void LrbPlatformDelegate::Activate(Window* window, size_t index) {
       tracker && tracker->discarded()) {
     tracker->RestoreNow();
   }
-  window->widget->widget_delegate()->SetTitle(
-      WindowTitle(tab.shell->web_contents()->GetTitle()));
+  window->widget->widget_delegate()->SetTitle(WindowTitle(TitleOf(tab)));
   UpdateTabs(window);
 }
 
@@ -850,7 +1106,7 @@ void LrbPlatformDelegate::ShowTabRow(Window* window) {
   std::vector<WindowView::TabLabel> labels;
   for (const Tab& tab : window->tabs) {
     WindowView::TabLabel label;
-    label.title = tab.shell ? tab.shell->web_contents()->GetTitle() : tab.title;
+    label.title = TitleOf(tab);
     if (label.title.empty() && tab.shell) {
       label.title =
           base::UTF8ToUTF16(tab.shell->web_contents()->GetVisibleURL().spec());
@@ -928,11 +1184,12 @@ void LrbPlatformDelegate::ReopenClosed(Window* window) {
   LoadSavedTab(window->context, tab);
 }
 
-void LrbPlatformDelegate::NewWindow(Window* window) {
+void LrbPlatformDelegate::NewWindow(Window* window, const GURL& url) {
   WindowView* view = ViewOf(window);
   next_ = Next();
   next_.new_window = true;
-  Shell::CreateNewWindow(window->context, view->NewTabUrl(), nullptr,
+  Shell::CreateNewWindow(window->context,
+                         url.is_empty() ? view->NewTabUrl() : url, nullptr,
                          gfx::Size());
 }
 
@@ -1025,6 +1282,12 @@ void LrbPlatformDelegate::SetContents(Shell* shell) {
     ViewOf(window)->ShowTab(shell, window->tabs[index].back_url,
                             window->content_size);
     UpdateTabs(window);
+    if (window->on_shown) {
+      // A hand-off: on screen once the page has painted. The page counts
+      // as shown meanwhile, so that it paints (a hidden page wouldn't).
+      shell->web_contents()->WasShown();
+      return;
+    }
     window->widget->GetNativeWindow()->GetHost()->Show();
     window->widget->Show();
     return;
@@ -1054,7 +1317,13 @@ void LrbPlatformDelegate::SetAddressBarURL(Shell* shell,
   if (!window) {
     return;
   }
-  window->tabs[*TabOf(window, shell)].url = url;
+  // A sleeping page shows about:blank: the tab keeps its page's address
+  // (the session, ShowExisting).
+  const ActivityTracker* tracker =
+      ActivityTracker::FromWebContents(shell->web_contents());
+  if (!(tracker && tracker->discarded() && url.IsAboutBlank())) {
+    window->tabs[*TabOf(window, shell)].url = url;
+  }
   WindowView* view = ViewOf(window);
   if (view->shell() == shell) {
     view->SetUrl(url);
@@ -1074,8 +1343,16 @@ void LrbPlatformDelegate::SetIsLoading(Shell* shell, bool loading) {
       // A restored page commits with the title it already had, which Shell
       // doesn't report: the window would stay untitled.
       window->widget->widget_delegate()->SetTitle(
-          WindowTitle(shell->web_contents()->GetTitle()));
+          WindowTitle(TitleOf(window->tabs[*TabOf(window, shell)])));
     }
+  }
+  if (!loading && window->on_shown && window->shown_shell == shell) {
+    // Loaded without painting yet (or not painting while off screen): on
+    // screen shortly anyway.
+    window->shown_timer.Start(
+        FROM_HERE, kShowAfterLoad,
+        base::BindOnce(&LrbPlatformDelegate::ShowWhenPainted,
+                       base::Unretained(this), base::Unretained(window)));
   }
   if (!loading) {
     UpdateTabs(window);
@@ -1088,11 +1365,26 @@ void LrbPlatformDelegate::SetTitle(Shell* shell,
   if (!window) {
     return;
   }
-  window->tabs[*TabOf(window, shell)].title = title;
+  // Discarding shows about:blank, untitled: the taskbar keeps the page's
+  // title while it sleeps.
+  const ActivityTracker* tracker =
+      ActivityTracker::FromWebContents(shell->web_contents());
+  if (title.empty() && tracker && tracker->discarded()) {
+    return;
+  }
+  Tab& tab = window->tabs[*TabOf(window, shell)];
+  tab.title = title;
   if (ViewOf(window)->shell() == shell) {
-    window->widget->widget_delegate()->SetTitle(WindowTitle(title));
+    window->widget->widget_delegate()->SetTitle(WindowTitle(TitleOf(tab)));
   }
   UpdateTabs(window);
+}
+
+void LrbPlatformDelegate::DidFirstVisuallyNonEmptyPaint(Shell* shell) {
+  Window* window = WindowOf(shell);
+  if (window && window->on_shown && window->shown_shell == shell) {
+    ShowWhenPainted(window);
+  }
 }
 
 void LrbPlatformDelegate::RequestMediaAccessPermission(
@@ -1285,7 +1577,9 @@ bool LrbPlatformDelegate::OpenURLFromTab(Shell* shell,
   }
   LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
   const std::string site = SiteForUrl(params.url);
-  if (client && site != client->site()) {
+  // Lean mode: another site's link opens in that site's instance. Standard
+  // mode has one instance for all sites: a tab here.
+  if (client && !client->standard() && site != client->site()) {
     client->OpenSiteWindow(site, params.url);  // another site's window
     return true;
   }

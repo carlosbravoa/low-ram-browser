@@ -17,6 +17,11 @@ struct ConfinePolicy {
   std::vector<std::string> read;        // read files and list directories
   std::vector<std::string> read_exec;   // ... and execute (binaries, libraries)
   std::vector<std::string> read_write;  // everything, devices' ioctls included
+  // Chromium's own sandbox runs inside (standard mode, lrb/common/mode.h):
+  // the seccomp filter lets unshare and chroot through, which its namespace
+  // sandbox needs (sandbox/linux/services/credentials.cc) to put renderers
+  // in a user namespace with an empty root. Everything else stays denied.
+  bool allow_sandbox = false;
 };
 
 // Confines the calling process and everything it starts, for good (call it
@@ -27,7 +32,7 @@ struct ConfinePolicy {
 //   (where the kernel supports them, ABI 6+);
 // - seccomp: system calls a browser never needs fail with EPERM (ptrace,
 //   mount, kexec, kernel modules, bpf, perf events, keyrings, userfaultfd,
-//   io_uring, ...).
+//   io_uring, namespaces and chroot unless `policy.allow_sandbox`, ...).
 // Returns false with `error` set if a step failed: the caller must not
 // exec then. A kernel without Landlock (`landlock_abi()` 0) still gets
 // no_new_privs and seccomp; `error` says so and the result is true.

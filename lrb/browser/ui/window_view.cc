@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
@@ -16,12 +17,15 @@
 #include "base/process/kill.h"
 #include "base/process/launch.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browsing_data_filter_builder.h"
+#include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
@@ -31,6 +35,7 @@
 #include "lrb/browser/bookmarks.h"
 #include "lrb/browser/dark_pages.h"
 #include "lrb/browser/download_manager_delegate.h"
+#include "lrb/browser/history.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/permission_manager.h"
 #include "lrb/browser/permissions/site_permissions.h"
@@ -40,8 +45,12 @@
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/browser/ui/settings_dialog.h"
 #include "lrb/browser/ui/suggestions_popup.h"
+#include "lrb/browser/zoom_levels.h"
 #include "lrb/common/content_blocker.h"
+#include "lrb/common/lrb_switches.h"
+#include "lrb/common/mode.h"
 #include "lrb/common/settings.h"
+#include "lrb/common/version.h"
 #include "lrb/coordinator/bookmarks.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom.h"
@@ -144,6 +153,98 @@ std::u16string AddressRest(const GURL& url, const std::string& site) {
   }
   return base::UTF8ToUTF16(rest);
 }
+
+constexpr char kReleases[] =
+    "https://github.com/carlosbravoa/low-ram-browser/releases";
+
+// Compares dotted parts ("0.1.0", "alpha.7"): numbers as numbers
+// ("alpha.10" after "alpha.9"), a number before a word (as semver), words
+// alphabetically, a prefix first. -1, 0 or 1.
+int CompareDotted(std::string_view a, std::string_view b) {
+  const std::vector<std::string_view> as = base::SplitStringPiece(
+      a, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  const std::vector<std::string_view> bs = base::SplitStringPiece(
+      b, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  for (size_t i = 0; i < std::max(as.size(), bs.size()); ++i) {
+    if (i >= as.size()) {
+      return -1;
+    }
+    if (i >= bs.size()) {
+      return 1;
+    }
+    unsigned na = 0;
+    unsigned nb = 0;
+    const bool a_number = base::StringToUint(as[i], &na);
+    const bool b_number = base::StringToUint(bs[i], &nb);
+    if (a_number && b_number) {
+      if (na != nb) {
+        return na < nb ? -1 : 1;
+      }
+    } else if (a_number != b_number) {
+      return a_number ? -1 : 1;
+    } else if (as[i] != bs[i]) {
+      return as[i] < bs[i] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+// Whether release `candidate` ("0.1.0-alpha.7") is newer than `current`:
+// the dotted numbers first, then a release beats its pre-releases
+// ("0.1.0" after "0.1.0-alpha.7"), then the pre-releases' parts. False for
+// anything that doesn't read as a version (the check's file is the
+// network's word).
+bool IsNewerRelease(std::string_view candidate, std::string_view current) {
+  auto split = [](std::string_view version) {
+    const size_t dash = version.find('-');
+    return std::make_pair(version.substr(0, dash),
+                          dash == std::string_view::npos
+                              ? std::string_view()
+                              : version.substr(dash + 1));
+  };
+  const auto [new_core, new_pre] = split(candidate);
+  const auto [core, pre] = split(current);
+  for (std::string_view part : base::SplitStringPiece(
+           new_core, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL)) {
+    unsigned number = 0;
+    if (!base::StringToUint(part, &number)) {
+      return false;
+    }
+  }
+  if (core.empty()) {
+    return false;  // a development build: no release to compare
+  }
+  if (const int by_core = CompareDotted(new_core, core); by_core != 0) {
+    return by_core > 0;
+  }
+  if (new_pre.empty() != pre.empty()) {
+    return new_pre.empty();
+  }
+  return CompareDotted(new_pre, pre) > 0;
+}
+
+// Runs `done` once a removal of browsing data is complete; owns itself.
+class RemovalObserver : public content::BrowsingDataRemover::Observer {
+ public:
+  RemovalObserver(content::BrowsingDataRemover* remover, base::OnceClosure done)
+      : remover_(remover), done_(std::move(done)) {
+    remover_->AddObserver(this);
+  }
+
+  // content::BrowsingDataRemover::Observer:
+  void OnBrowsingDataRemoverDone(uint64_t failed_data_types) override {
+    remover_->RemoveObserver(this);
+    base::OnceClosure done = std::move(done_);
+    delete this;
+    std::move(done).Run();
+  }
+
+ private:
+  ~RemovalObserver() override = default;
+
+  raw_ptr<content::BrowsingDataRemover> remover_;
+  base::OnceClosure done_;
+};
 
 }  // namespace
 
@@ -359,6 +460,23 @@ WindowView::WindowView(TabActions actions) : actions_(std::move(actions)) {
                                      ui::kColorIcon, 16));
   blocked_->SetEnabledTextColors(ui::kColorLabelForegroundSecondary);
   blocked_->SetVisible(false);
+
+  // A newer release (the coordinator's daily check, --lrb-latest-release).
+  const std::string latest =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kLatestRelease);
+  if (IsNewerRelease(latest, Version())) {
+    update_ = bar->AddChildView(std::make_unique<views::LabelButton>(
+        base::BindRepeating(&WindowView::OpenReleases, base::Unretained(this)),
+        u"Update available"));
+    update_->SetImageModel(
+        views::Button::STATE_NORMAL,
+        ui::ImageModel::FromVectorIcon(vector_icons::kDownloadIcon,
+                                       ui::kColorIcon, 16));
+    update_->SetTooltipText(base::UTF8ToUTF16(
+        "lrb " + latest + " is out (this is " + std::string(Version()) +
+        "): open the releases page"));
+  }
 
   bar->AddChildView(views::CreateVectorImageButtonWithNativeTheme(
                         base::BindRepeating(&WindowView::ShowMenu,
@@ -622,8 +740,9 @@ void WindowView::PageClosed() {
 }
 
 GURL WindowView::NewTabUrl() const {
-  return site_.empty() ? GURL(url::kAboutBlankURL)
-                       : GURL("https://" + site_ + "/");
+  // Standard mode shows every site: a new tab is for going anywhere.
+  return site_.empty() || StandardMode() ? GURL(url::kAboutBlankURL)
+                                         : GURL("https://" + site_ + "/");
 }
 
 void WindowView::SetUrl(const GURL& url) {
@@ -704,9 +823,12 @@ bool WindowView::HandleShortcut(const ui::KeyEvent& event) {
   const ui::KeyboardCode key = event.key_code();
   const bool ctrl = mods == ui::EF_CONTROL_DOWN;
   const bool alt = mods == ui::EF_ALT_DOWN;
-  if ((ctrl && key == ui::VKEY_L) || (alt && key == ui::VKEY_D) ||
-      (!mods && key == ui::VKEY_F6)) {
+  if ((ctrl && key == ui::VKEY_L) || (alt && key == ui::VKEY_D)) {
     FocusAddress();
+  } else if (!mods && key == ui::VKEY_F6) {
+    CycleFocus(+1);
+  } else if (mods == ui::EF_SHIFT_DOWN && key == ui::VKEY_F6) {
+    CycleFocus(-1);
   } else if ((alt && key == ui::VKEY_LEFT) || key == ui::VKEY_BROWSER_BACK) {
     GoBack();
   } else if ((alt && key == ui::VKEY_RIGHT) ||
@@ -754,7 +876,7 @@ bool WindowView::HandleShortcut(const ui::KeyEvent& event) {
              key == ui::VKEY_T) {
     actions_.reopen_closed.Run();
   } else if (ctrl && key == ui::VKEY_N) {
-    actions_.new_window.Run();
+    actions_.new_window.Run(GURL());
   } else if (ctrl && key == ui::VKEY_D && star_->GetVisible()) {
     ToggleBookmark();
   } else if (ctrl && key == ui::VKEY_P && kCanPrint) {
@@ -783,7 +905,56 @@ void WindowView::FocusAddress() {
   address_->RequestFocus();
 }
 
-void WindowView::Navigate(std::u16string_view input) {
+void WindowView::CycleFocus(int direction) {
+  views::View* focused =
+      GetFocusManager() ? GetFocusManager()->GetFocusedView() : nullptr;
+  const bool question = question_row_->GetVisible();
+  // Stops: 0 the page, 1 the address, 2 the question.
+  int at = 0;
+  if (focused == address_) {
+    at = 1;
+  } else if (question && focused && question_row_->Contains(focused)) {
+    at = 2;
+  }
+  const int stops = question ? 3 : 2;
+  const int next = (at + direction + stops) % stops;
+  if (next == 1) {
+    FocusAddress();
+  } else if (next == 2) {
+    FocusQuestionControl();
+  } else if (shell_) {
+    shell_->web_contents()->Focus();
+  }
+}
+
+void WindowView::FocusQuestionControl() {
+  if (questions_.empty()) {
+    return;
+  }
+  switch (questions_.front().focus) {
+    case Question::Focus::kAccept:
+      accept_->RequestFocus();
+      return;
+    case Question::Focus::kCancel:
+      cancel_->RequestFocus();
+      return;
+    case Question::Focus::kInput:
+      question_input_->RequestFocus();
+      return;
+    case Question::Focus::kNone:
+      break;
+  }
+  // No preference: the first control, never Allow by default.
+  if (question_input_->GetVisible()) {
+    question_input_->RequestFocus();
+  } else if (cancel_->GetVisible()) {
+    cancel_->RequestFocus();
+  } else {
+    accept_->RequestFocus();
+  }
+}
+
+void WindowView::Navigate(std::u16string_view input, bool new_window) {
   const std::string text(base::TrimWhitespaceASCII(
       base::UTF16ToUTF8(input), base::TRIM_ALL));
   if (text.empty()) {
@@ -803,20 +974,37 @@ void WindowView::Navigate(std::u16string_view input) {
     if (!looks_like_address) {
       Search(base::UTF8ToUTF16(text),
              base::BindOnce(
-                 [](base::WeakPtr<WindowView> view, GURL url) {
+                 [](base::WeakPtr<WindowView> view, bool new_window, GURL url) {
                    if (view) {
-                     view->shell_->LoadURL(url);
-                     view->shell_->web_contents()->Focus();
+                     view->Open(new_window, url);
                    }
                  },
-                 weak_factory_.GetWeakPtr()));
+                 weak_factory_.GetWeakPtr(), new_window));
       return;
     }
     url = GURL("https://" + text);
   }
-  if (url.is_valid()) {
+  Open(new_window, url);
+}
+
+void WindowView::Open(bool new_window, const GURL& url) {
+  if (!url.is_valid() || !shell_) {
+    return;
+  }
+  if (!new_window) {
     shell_->LoadURL(url);
     shell_->web_contents()->Focus();
+    return;
+  }
+  address_->Revert();  // this window keeps its page
+  LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
+  const std::string site = SiteForUrl(url);
+  if (client && !client->standard() && !site.empty() &&
+      site != client->site()) {
+    // Lean mode, another site: its own instance, beside this window.
+    client->OpenSiteWindow(site, url);
+  } else {
+    actions_.new_window.Run(url);
   }
 }
 
@@ -1112,6 +1300,9 @@ void WindowView::SetBookmarked(bool bookmarked) {
 void WindowView::ShowDownload(const DownloadStatus& status) {
   using State = DownloadStatus::State;
   if (status.state == State::kCanceled) {
+    std::erase_if(downloads_, [&status](const DownloadStatus& d) {
+      return d.id == status.id;
+    });
     if (download_status_ && download_status_->id == status.id) {
       download_status_.reset();
       download_->SetVisible(false);
@@ -1119,6 +1310,17 @@ void WindowView::ShowDownload(const DownloadStatus& status) {
     return;
   }
   download_status_ = status;
+  auto known = std::find_if(
+      downloads_.begin(), downloads_.end(),
+      [&status](const DownloadStatus& d) { return d.id == status.id; });
+  if (known != downloads_.end()) {
+    *known = status;
+  } else {
+    downloads_.insert(downloads_.begin(), status);
+    if (downloads_.size() > kMaxDownloads) {
+      downloads_.pop_back();
+    }
+  }
   std::u16string text = status.name;
   if (status.state == State::kInProgress && status.percent >= 0) {
     text += u" " + base::NumberToString16(status.percent) + u"%";
@@ -1135,6 +1337,15 @@ void WindowView::ShowDownload(const DownloadStatus& status) {
 }
 
 void WindowView::ToggleBlocking() {
+  if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
+      client && client->standard()) {
+    // One instance for every site: off (or on) for this site only. The
+    // client saves the list and reloads the site's pages in new renderers
+    // (theirs have the old list), on as well as off.
+    ContentBlocker::SetSiteEnabled(site_, !ContentBlocker::EnabledFor(url_));
+    client->ReloadSiteBypassingCache(site_);
+    return;
+  }
   const bool enable = !ContentBlocker::enabled();
   ContentBlocker::SetEnabled(enable);
   // Kept in the site's profile (read at startup: lrb_main_delegate.cc).
@@ -1156,16 +1367,124 @@ void WindowView::ToggleBlocking() {
   shell_->ReloadBypassingCache();
 }
 
+void WindowView::AskForgetSite() {
+  if (site_.empty() || !shell_) {
+    return;
+  }
+  Question question;
+  question.text =
+      u"Forget what " + base::UTF8ToUTF16(site_) +
+      u" stored on this computer? Its cookies (you will be signed out), "
+      u"site data and cached files go, with the permissions you gave it and "
+      u"its zoom. Bookmarks and history stay.";
+  question.accept_label = u"Forget";
+  question.cancel_label = u"Cancel";
+  question.focus = Question::Focus::kCancel;  // a stray Enter keeps it all
+  question.answer = base::BindOnce(
+      [](base::WeakPtr<WindowView> view, std::string site,
+         std::optional<bool> accepted, const std::u16string&) {
+        if (view && accepted.value_or(false)) {
+          view->ForgetSiteData(site);
+        }
+      },
+      weak_factory_.GetWeakPtr(), site_);
+  Ask(std::move(question));
+}
+
+void WindowView::ForgetSiteData(const std::string& site) {
+  if (!shell_) {
+    return;
+  }
+  content::BrowserContext* context =
+      shell_->web_contents()->GetBrowserContext();
+  // Everything under the registrable domain: its subdomains' cookies and
+  // storage too (mail.google.com's for google.com).
+  std::unique_ptr<content::BrowsingDataFilterBuilder> filter =
+      content::BrowsingDataFilterBuilder::Create(
+          content::BrowsingDataFilterBuilder::Mode::kDelete);
+  filter->AddRegisterableDomain(site);
+  content::BrowsingDataRemover* remover = context->GetBrowsingDataRemover();
+  // The pages reload once it's gone (bypassing the cache, which went too).
+  auto* observer = new RemovalObserver(
+      remover, base::BindOnce(
+                   [](std::string site) {
+                     for (Shell* shell : Shell::windows()) {
+                       if (SiteForUrl(shell->web_contents()
+                                          ->GetLastCommittedURL()) == site) {
+                         shell->ReloadBypassingCache();
+                       }
+                     }
+                   },
+                   site));
+  remover->RemoveWithFilterAndReply(
+      base::Time(), base::Time::Max(),
+      content::BrowsingDataRemover::DATA_TYPE_COOKIES |
+          content::BrowsingDataRemover::DATA_TYPE_DOM_STORAGE |
+          content::BrowsingDataRemover::DATA_TYPE_CACHE,
+      content::BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB,
+      std::move(filter), observer);
+  static_cast<LrbPermissionManager*>(context->GetPermissionControllerDelegate())
+      ->answers()
+      .ForgetSite(site);
+  ZoomLevels::ForgetSite(context, site);
+}
+
+void WindowView::OpenReleases() {
+  if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
+    const GURL url(kReleases);
+    client->OpenSiteWindow(SiteForUrl(url), url);
+  }
+}
+
+void WindowView::ShowInFolder(const DownloadStatus& download) {
+  if (!download.broker_id.empty()) {
+    if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
+      client->SendToCoordinator("show-saved " + download.broker_id);
+    }
+    return;
+  }
+  // The desktop's file manager, on the folder (never opens the file).
+  base::ThreadPool::PostTask(
+      FROM_HERE, {base::MayBlock()},
+      base::BindOnce(
+          [](base::FilePath folder) {
+            base::Process process = base::LaunchProcess(
+                {"xdg-open", folder.value()}, base::LaunchOptions());
+            if (process.IsValid()) {
+              base::EnsureProcessGetsReaped(std::move(process));
+            }
+          },
+          download.path.DirName()));
+}
+
 void WindowView::ShowDownloadMenu() {
-  if (!download_status_) {
+  if (!download_status_ && downloads_.empty()) {
     return;
   }
   download_menu_model_.Clear();
-  if (download_status_->state == DownloadStatus::State::kInProgress) {
+  if (download_status_ &&
+      download_status_->state == DownloadStatus::State::kInProgress) {
     download_menu_model_.AddItem(kCancelDownload, u"Cancel download");
-  } else {
+  } else if (download_status_) {
     download_menu_model_.AddItem(kShowDownload, u"Show in folder");
     download_menu_model_.AddItem(kDismissDownload, u"Dismiss");
+  }
+  // This window's last downloads: a click shows one in its folder.
+  if (downloads_.size() > 1 || !download_status_) {
+    download_menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
+    download_menu_model_.AddTitle(u"Recent downloads: show in folder");
+    for (size_t i = 0; i < downloads_.size(); ++i) {
+      const DownloadStatus& download = downloads_[i];
+      std::u16string label = download.name;
+      if (download.state == DownloadStatus::State::kInProgress &&
+          download.percent >= 0) {
+        label += u" " + base::NumberToString16(download.percent) + u"%";
+      } else if (download.state == DownloadStatus::State::kFailed) {
+        label += u": failed";
+      }
+      download_menu_model_.AddItem(kDownloadFirst + static_cast<int>(i),
+                                   label);
+    }
   }
   menu_runner_ = std::make_unique<views::MenuRunner>(
       &download_menu_model_, views::MenuRunner::HAS_MNEMONICS);
@@ -1316,9 +1635,26 @@ void WindowView::ShowMenuWith(std::vector<Suggestion> bookmarks) {
                                : bookmark.title);
     bookmark_urls_.push_back(bookmark.url);
   }
-  if (!bookmark_urls_.empty()) {
+  history_menu_model_.Clear();
+  history_urls_.clear();
+  if (History* history =
+          History::For(shell_->web_contents()->GetBrowserContext())) {
+    for (const History::Page& page : history->Recent(kMaxHistoryItems)) {
+      history_menu_model_.AddItem(
+          kHistoryFirst + static_cast<int>(history_urls_.size()),
+          page.title.empty() ? base::UTF8ToUTF16(page.url.spec())
+                             : page.title);
+      history_urls_.push_back(page.url);
+    }
+  }
+  if (!bookmark_urls_.empty() || !history_urls_.empty()) {
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
+  }
+  if (!bookmark_urls_.empty()) {
     menu_model_.AddSubMenu(kBookmarks, u"Bookmarks", &bookmarks_menu_model_);
+  }
+  if (!history_urls_.empty()) {
+    menu_model_.AddSubMenu(kHistory, u"History", &history_menu_model_);
   }
   if (kCanPrint || !site_.empty()) {
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
@@ -1329,6 +1665,9 @@ void WindowView::ShowMenuWith(std::vector<Suggestion> bookmarks) {
   if (!site_.empty()) {
     menu_model_.AddCheckItem(kDarkPages,
                              u"Dark pages on " + base::UTF8ToUTF16(site_));
+    if (url_.SchemeIsHTTPOrHTTPS()) {
+      menu_model_.AddItem(kForgetSite, u"Forget this site's data...");
+    }
   }
   forget_.clear();
   if (url_.SchemeIsHTTPOrHTTPS()) {
@@ -1348,19 +1687,23 @@ void WindowView::ShowMenuWith(std::vector<Suggestion> bookmarks) {
       forget_.push_back(type);
     }
   }
+  const bool standard = StandardMode();
   if (ContentBlocker::loaded() && !site_.empty()) {
+    // Standard mode: per site in the one instance; lean: the instance's.
+    const bool blocking =
+        standard ? ContentBlocker::EnabledFor(url_) : ContentBlocker::enabled();
     menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
-    menu_model_.AddItem(
-        kToggleBlocking,
-        (ContentBlocker::enabled() ? u"Turn off content blocking on "
-                                   : u"Turn on content blocking on ") +
-            base::UTF8ToUTF16(site_));
+    menu_model_.AddItem(kToggleBlocking,
+                        (blocking ? u"Turn off content blocking on "
+                                  : u"Turn on content blocking on ") +
+                            base::UTF8ToUTF16(site_));
   }
   menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
   menu_model_.AddItem(kSettings, u"Settings...");
   menu_model_.AddItem(kAbout, u"About lrb");
   menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
-  menu_model_.AddItem(kCloseSite, u"Close all pages of this site");
+  menu_model_.AddItem(kCloseSite, standard ? u"Close all windows"
+                                           : u"Close all pages of this site");
 
   menu_runner_ = std::make_unique<views::MenuRunner>(
       &menu_model_, views::MenuRunner::HAS_MNEMONICS);
@@ -1442,13 +1785,24 @@ bool WindowView::HandleKeyEvent(views::Textfield* sender,
     return false;
   }
   if (key_event.key_code() == ui::VKEY_RETURN) {
+    // Shift+Enter or Alt+Enter: in a new window.
+    const int mods = key_event.flags() & (ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN |
+                                          ui::EF_CONTROL_DOWN);
+    const bool new_window =
+        mods == ui::EF_SHIFT_DOWN || mods == ui::EF_ALT_DOWN;
     const std::u16string text(address_->GetText());
     if (completion_ && completion_->first == text) {
-      OpenSuggestion(completion_->second);
+      if (!new_window) {
+        OpenSuggestion(completion_->second);
+        return true;
+      }
+      const GURL url = completion_->second;
+      HideSuggestions();
+      Open(/*new_window=*/true, url);
       return true;
     }
     HideSuggestions();
-    Navigate(text);
+    Navigate(text, new_window);
     return true;
   }
   if (key_event.key_code() == ui::VKEY_ESCAPE) {
@@ -1483,6 +1837,16 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
     OpenSuggestion(bookmark_urls_[command_id - kBookmarkFirst]);
     return;
   }
+  if (command_id >= kHistoryFirst &&
+      command_id < kHistoryFirst + static_cast<int>(history_urls_.size())) {
+    OpenSuggestion(history_urls_[command_id - kHistoryFirst]);
+    return;
+  }
+  if (command_id >= kDownloadFirst &&
+      command_id < kDownloadFirst + static_cast<int>(downloads_.size())) {
+    ShowInFolder(downloads_[command_id - kDownloadFirst]);
+    return;
+  }
   if (command_id >= kForgetFirst &&
       command_id < kForgetFirst + static_cast<int>(forget_.size())) {
     static_cast<LrbPermissionManager*>(shell_->web_contents()
@@ -1500,25 +1864,12 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
       }
       break;
     case kShowDownload:
-      if (download_status_ && !download_status_->broker_id.empty()) {
-        if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
-          client->SendToCoordinator("show-saved " +
-                                    download_status_->broker_id);
-        }
-      } else if (download_status_) {
-        // The desktop's file manager, on the folder (never opens the file).
-        base::ThreadPool::PostTask(
-            FROM_HERE, {base::MayBlock()},
-            base::BindOnce(
-                [](base::FilePath folder) {
-                  base::Process process = base::LaunchProcess(
-                      {"xdg-open", folder.value()}, base::LaunchOptions());
-                  if (process.IsValid()) {
-                    base::EnsureProcessGetsReaped(std::move(process));
-                  }
-                },
-                download_status_->path.DirName()));
+      if (download_status_) {
+        ShowInFolder(*download_status_);
       }
+      break;
+    case kForgetSite:
+      AskForgetSite();
       break;
     case kToggleBlocking:
       ToggleBlocking();
@@ -1551,7 +1902,7 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
       NewPage();
       break;
     case kNewWindow:
-      actions_.new_window.Run();
+      actions_.new_window.Run(GURL());
       break;
     case kReopenClosed:
       actions_.reopen_closed.Run();
@@ -1567,9 +1918,9 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
       CloseSoon();
       break;
     case kCloseSite:
-      // Every window of this instance shows this site; each page may ask
-      // "leave this page?". Posted: closing destroys this view, inside its
-      // menu's callback.
+      // Every window of this instance (lean mode: all this site's; standard:
+      // all); each page may ask "leave this page?". Posted: closing destroys
+      // this view, inside its menu's callback.
       base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
           FROM_HERE, base::BindOnce(&LrbPlatformDelegate::CloseAllByUser));
       break;
@@ -1578,6 +1929,16 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
 
 bool WindowView::IsCommandIdChecked(int command_id) const {
   return command_id == kDarkPages && DarkPagesOn();
+}
+
+bool WindowView::IsCommandIdEnabled(int command_id) const {
+  if (command_id >= kDownloadFirst &&
+      command_id < kDownloadFirst + static_cast<int>(downloads_.size())) {
+    // Only a finished file is in its folder.
+    return downloads_[command_id - kDownloadFirst].state ==
+           DownloadStatus::State::kDone;
+  }
+  return true;
 }
 
 bool WindowView::GetAcceleratorForCommandId(

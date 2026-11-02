@@ -115,9 +115,22 @@ std::vector<Budget> ReadBudgets(const std::string& sysfs_cgroup_root,
   return budgets;
 }
 
-bool BelowPercent(const std::vector<Budget>& budgets, int percent) {
+bool BelowPercent(const std::vector<Budget>& budgets,
+                  int percent,
+                  int64_t max_bytes) {
+  if (percent > 100) {
+    return true;
+  }
+  if (percent <= 0) {
+    return false;
+  }
   for (const Budget& budget : budgets) {
-    if (budget.available * 100 < budget.limit * percent) {
+    int64_t threshold = budget.limit / 100 * percent +
+                        budget.limit % 100 * percent / 100;
+    if (max_bytes > 0) {
+      threshold = std::min(threshold, max_bytes);
+    }
+    if (budget.available < threshold) {
       return true;
     }
   }

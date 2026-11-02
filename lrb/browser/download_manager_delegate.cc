@@ -18,10 +18,12 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/web_contents.h"
+#include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/ui/file_picker.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/browser/ui/window_view.h"
+#include "lrb/common/settings.h"
 #include "net/base/filename_util.h"
 
 namespace lrb {
@@ -29,11 +31,12 @@ namespace lrb {
 namespace {
 
 // The user's Downloads folder (XDG), with `item`'s name: the picker's
-// suggestion. Blocking: reads user-dirs.dirs, may create the folder.
-base::FilePath SuggestedPath(const GURL& url,
-                             const std::string& content_disposition,
-                             const std::string& suggested_name,
-                             const std::string& mime_type) {
+// suggestion, and whether to ask at all (the setting).
+// Blocking: reads user-dirs.dirs and the settings, may create the folder.
+SuggestedTarget SuggestedPath(const GURL& url,
+                              const std::string& content_disposition,
+                              const std::string& suggested_name,
+                              const std::string& mime_type) {
   base::FilePath folder =
       base::nix::GetXDGUserDirectory("DOWNLOAD", "Downloads");
   // Without a configured Downloads folder (user-dirs.dirs: a minimal
@@ -42,9 +45,12 @@ base::FilePath SuggestedPath(const GURL& url,
     folder = folder.Append("Downloads");
   }
   base::CreateDirectory(folder);
-  return folder.Append(net::GenerateFileName(url, content_disposition,
-                                             std::string(), suggested_name,
-                                             mime_type, "download"));
+  SuggestedTarget target;
+  target.path = folder.Append(net::GenerateFileName(
+      url, content_disposition, std::string(), suggested_name, mime_type,
+      "download"));
+  target.ask = Settings::Read().ask_downloads;
+  return target;
 }
 
 Shell* ShellOf(download::DownloadItem* item) {
@@ -134,28 +140,45 @@ bool LrbDownloadManagerDelegate::DetermineDownloadTarget(
 void LrbDownloadManagerDelegate::OnNameGenerated(
     uint32_t id,
     download::DownloadTargetCallback callback,
-    const base::FilePath& suggested) {
+    SuggestedTarget target) {
   download::DownloadItem* item = manager_ ? manager_->GetDownload(id) : nullptr;
   if (!item) {
     RunTarget(std::move(callback), base::FilePath());
     return;
   }
+  const base::FilePath& suggested = target.path;
+  LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
+  if (!target.ask && !(client && client->has_coordinator())) {
+    // The user chose not to be asked: the Downloads folder, under a free
+    // name; the bar says where. (Under the coordinator, its file broker
+    // reads the same setting and answers without the picker.)
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE,
+        {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+         base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
+        base::BindOnce(&base::GetUniquePath, suggested),
+        base::BindOnce(&RunTarget, std::move(callback)));
+    return;
+  }
+  const bool ask = target.ask;
   Shell* shell = ShellOf(item);
   PickFiles(
       ui::SelectFileDialog::SELECT_SAVEAS_FILE, u"Save file", suggested,
       shell ? shell->window() : gfx::NativeWindow(),
       base::BindOnce(
           [](base::WeakPtr<LrbDownloadManagerDelegate> self, uint32_t id,
-             base::FilePath suggested,
+             base::FilePath suggested, bool ask,
              download::DownloadTargetCallback callback, PickResult result,
              std::vector<base::FilePath> paths) {
             switch (result) {
               case PickResult::kChosen:
                 // Through the coordinator without a picker: it chose the
-                // Downloads folder.
+                // Downloads folder. (Not asked because of the setting: no
+                // apology for not asking.)
                 if (std::optional<BrokeredSave> save =
                         GetBrokeredSave(paths.front());
-                    save && save->automatic && self && self->manager_) {
+                    save && save->automatic && ask && self &&
+                    self->manager_) {
                   if (download::DownloadItem* item =
                           self->manager_->GetDownload(id)) {
                     item->SetUserData(
@@ -188,7 +211,8 @@ void LrbDownloadManagerDelegate::OnNameGenerated(
                 base::BindOnce(&base::GetUniquePath, suggested),
                 base::BindOnce(&RunTarget, std::move(callback)));
           },
-          weak_factory_.GetWeakPtr(), id, suggested, std::move(callback)));
+          weak_factory_.GetWeakPtr(), id, suggested, ask,
+          std::move(callback)));
 }
 
 bool LrbDownloadManagerDelegate::ShouldOpenDownload(

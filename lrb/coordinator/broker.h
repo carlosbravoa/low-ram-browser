@@ -27,7 +27,10 @@ namespace lrb::coordinator {
 //                                      picker)
 //   pick-save <id> <name>            save-target <id> <file-uri> [auto]
 //     (download: where to save)        (where it will go; "auto": no picker,
-//                                      the Downloads folder; none: cancelled)
+//                                      or the user chose not to be asked
+//                                      (ask_downloads false in the
+//                                      settings): the Downloads folder;
+//                                      none: cancelled)
 //                                    The instance writes to
 //                                    <profile>/downloads/<id>/<file name>.
 //   save-done <id>                   saved <id> 0|1
@@ -42,8 +45,14 @@ class FileBroker {
  public:
   // Sends a line (without the newline) to the instance on `fd`.
   using Reply = std::function<void(int fd, const std::string& line)>;
+  // Whether downloads ask where to save (the setting), asked for each one:
+  // the settings window may change it while the coordinator runs.
+  using AskDownloads = std::function<bool()>;
 
-  FileBroker(std::string picker, std::string downloads_dir, Reply reply);
+  FileBroker(std::string picker,
+             std::string downloads_dir,
+             Reply reply,
+             AskDownloads ask_downloads);
   ~FileBroker();
 
   // A request from the instance on `fd`, whose profile is `profile` (empty:
@@ -88,10 +97,13 @@ class FileBroker {
   void FinishOpen(Pick& pick, const std::vector<std::string>& paths);
   void FinishSave(Pick& pick, const std::vector<std::string>& paths);
   void SaveDone(int fd, const std::string& profile, const std::string& id);
+  // Answers a save with a free name in the Downloads folder ("auto").
+  void SaveToDownloads(const Pick& pick);
 
   std::string picker_;
   std::string downloads_dir_;
   Reply reply_;
+  AskDownloads ask_downloads_;
   std::map<int, Pick> picks_;  // by pipe fd
   // (profile, id) -> where the finished download goes.
   std::map<std::pair<std::string, std::string>, std::string> saves_;

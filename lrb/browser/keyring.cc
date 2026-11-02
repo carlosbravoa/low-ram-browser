@@ -15,6 +15,9 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "lrb/browser/lrb_content_browser_client.h"
+#include "lrb/browser/site.h"
+#include "lrb/common/mode.h"
+#include "url/gurl.h"
 
 namespace lrb {
 
@@ -101,6 +104,17 @@ Details ParseRecord(std::string_view record) {
   return details;
 }
 
+// Standard mode: the instance's profile is every site's, so the broker
+// can't tell the site from it; the request names it (" <site>"). The broker
+// checks that `origin` belongs to it. Lean mode: nothing, the profile says.
+std::string SiteSuffix(const std::string& origin) {
+  const std::string site =
+      StandardMode() ? SiteForUrl(GURL(origin)) : std::string();
+  // Without one (not http(s)), the standard profile names no site either:
+  // the broker refuses.
+  return site.empty() ? std::string() : " " + Encode(site);
+}
+
 uint64_t Add(Pending pending) {
   const uint64_t id = NextId();
   Requests()[id] = std::move(pending);
@@ -134,7 +148,7 @@ void ListPasswords(
   pending.users = std::move(done);
   client->SendToCoordinator("pw-list " +
                             base::NumberToString(Add(std::move(pending))) +
-                            " " + Encode(origin));
+                            " " + Encode(origin) + SiteSuffix(origin));
 }
 
 void GetPassword(const std::string& origin,
@@ -149,7 +163,8 @@ void GetPassword(const std::string& origin,
   pending.password = std::move(done);
   client->SendToCoordinator(
       "pw-get " + base::NumberToString(Add(std::move(pending))) + " " +
-      Encode(origin) + " " + Encode(base::UTF16ToUTF8(username)));
+      Encode(origin) + " " + Encode(base::UTF16ToUTF8(username)) +
+      SiteSuffix(origin));
 }
 
 void SavePassword(const std::string& origin,
@@ -166,7 +181,7 @@ void SavePassword(const std::string& origin,
   client->SendToCoordinator(
       "pw-save " + base::NumberToString(Add(std::move(pending))) + " " +
       Encode(origin) + " " + Encode(base::UTF16ToUTF8(username)) + " " +
-      Encode(base::UTF16ToUTF8(password)));
+      Encode(base::UTF16ToUTF8(password)) + SiteSuffix(origin));
 }
 
 void GetDetails(base::OnceCallback<void(Details)> done) {

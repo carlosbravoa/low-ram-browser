@@ -59,11 +59,25 @@ class WindowView;
 // Tabs: a window shows one of its tabs. A live tab is a
 // Shell (its page). A tab opened in the background, or restored but not
 // shown yet, is only its address (and saved history): it loads when first
-// shown. New pages of the site become tabs of the most recently used
+// shown. New pages become tabs of the most recently used visible
 // window: everything lrb opens itself (New page, the coordinator's "show",
 // "Open link in new window") and new windows a page opens without an
 // opener (target=_blank). Popups with an opener (sign-in, payment) stay
 // windows of their own: they must stay live and talk to their opener.
+//
+// Hidden windows (lean mode): leaving a site doesn't close its window. The
+// window stays until the other site's window is on screen, then hides
+// (HideWindowOf, the coordinator's "hide"), keeping its tabs, pages and
+// sign-ins: Back from the other site shows it again in place, at once
+// (ShowExisting, the coordinator's "show"). An instance whose windows are
+// all hidden is parked; the coordinator is told (ReportWindowsHidden) and
+// discards or closes parked instances first.
+//
+// Hand-offs: a window replacing another site's (SetNextWindowShown) is
+// shown only once its page has painted something, or 1.5 s after the page
+// loaded, whichever comes first: the window it replaces stays until then,
+// so the user sees a swap, not an empty window or a gap (Wayland animates
+// new windows in).
 class LrbPlatformDelegate : public views::WidgetObserver {
  public:
   enum UIControl { BACK_BUTTON, FORWARD_BUTTON, STOP_BUTTON };
@@ -81,6 +95,29 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   static void SetNextWindowBackUrl(const GURL& back);
   // The page of another site `shell`'s window was opened from, if any.
   static GURL BackUrlOf(Shell* shell);
+
+  // Hides the window showing `contents` (the one that left for another
+  // site). Its tabs and pages stay. False if it has no window.
+  static bool HideWindowOf(content::WebContents* contents);
+  // Whether every window is hidden (the instance is parked). False with no
+  // windows.
+  static bool AllWindowsHidden();
+  // Brings the tab whose page is `url` (last committed, else pending) to the
+  // front: its window unhidden and, with `bounds` (screen origin, page
+  // size), moved there; the tab activated, the window raised. An exact
+  // match first, else one that differs only in the fragment. False if no
+  // tab shows `url`.
+  static bool ShowExisting(const GURL& url, std::optional<gfx::Rect> bounds);
+  // Runs `shown` when the next window created is on screen: at its first
+  // visually non-empty paint, or 1.5 s after its page finished loading,
+  // whichever first. Until then the window isn't shown. (Windows that
+  // replace another site's are shown then, not before: no gap on Wayland.)
+  // If the next page lands in an existing window as a tab, `shown` runs
+  // when that tab has painted, the same way.
+  static void SetNextWindowShown(base::OnceClosure shown);
+  // The site's memory in window titles (the setting; off by default). May
+  // be called before the platform starts.
+  static void SetShowMemory(bool show);
 
   // Asks the user, in `contents`' window, whether `origin` may have
   // `types` (camera, microphone, ...: AskablePermission). `focus`: the
@@ -114,13 +151,17 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   // window.
   static bool OpenTab(Shell* opener, const GURL& url);
 
-  // Closes every window (the menu's "Close all pages of this site"): tabs
-  // not loaded go at once, each page may ask "leave this page?".
+  // Closes every window, hidden ones too (the menu's "Close all pages of
+  // this site", "Close all windows" in standard mode): tabs not loaded go
+  // at once, each page may ask "leave this page?".
   static void CloseAllByUser();
 
   // Under pressure (the coordinator's "discard-background"): live tabs not
-  // shown sleep (URL + history, back when shown), except ones playing sound.
-  static void DiscardBackgroundTabs();
+  // shown sleep (URL + history, back when shown). Every tab of a hidden
+  // window counts as not shown. Never ones playing sound; at moderate
+  // pressure (!critical) not ones with unsaved changes either (a
+  // beforeunload handler: a form being filled in).
+  static void DiscardBackgroundTabs(bool critical);
 
   // Forgets tabs not loaded (before closing everything).
   static void DropUnloadedTabs();
@@ -169,7 +210,11 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   void EnableUIControl(Shell* shell, UIControl control, bool is_enabled);
   void SetAddressBarURL(Shell* shell, const GURL& url);
   void SetIsLoading(Shell* shell, bool loading);
+  // A discarded tab's empty title is ignored: a sleeping window keeps its
+  // title in the taskbar.
   void SetTitle(Shell* shell, const std::u16string& title);
+  // The page painted something: a window waiting for it is shown.
+  void DidFirstVisuallyNonEmptyPaint(Shell* shell);
   // Whether it destroys `shell` itself (true) or Shell deletes itself.
   bool DestroyShell(Shell* shell);
   // alert(), confirm(), prompt(), "leave this page?": the question row.
@@ -231,8 +276,17 @@ class LrbPlatformDelegate : public views::WidgetObserver {
     raw_ptr<content::BrowserContext> context;
     bool shown = false;
     bool closing = false;  // in CleanUp(): its last Shell is being destroyed
+    // Hidden after leaving for another site (HideWindowOf): kept, not on
+    // screen.
+    bool hidden = false;
     std::vector<Tab> tabs;
     size_t active = 0;
+    // A hand-off (SetNextWindowShown): runs when `shown_shell`'s page is on
+    // screen. A new window isn't shown until then.
+    base::OnceClosure on_shown;
+    raw_ptr<Shell> shown_shell = nullptr;
+    base::OneShotTimer shown_timer;      // after the page loaded
+    base::OneShotTimer shown_cap_timer;  // after the window opened
   };
 
   // Where the next Shell goes: a new window, or a tab of `window` (in place
@@ -246,15 +300,28 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   Window* WindowOf(Shell* shell);
   std::optional<size_t> TabOf(Window* window, Shell* shell);
   bool Exists(const Window* window) const;
+  // The most recently used window, preferring visible ones.
   Window* LastActive();
+  // The visible windows changed: the coordinator hears whether all are
+  // hidden.
+  void ReportVisibility();
+  // Shows a hidden window again (a tab landing in it, ShowExisting).
+  void Unhide(Window* window);
+  // A window waiting for its page (a hand-off) goes on screen now, and the
+  // hand-off's closure runs.
+  void ShowWhenPainted(Window* window);
+  // The title to show for `tab`: the page's, or the last one it had while
+  // it sleeps (discarded).
+  std::u16string TitleOf(const Tab& tab) const;
   WindowView* ViewOf(Window* window);
   // Shows tab `index` of `window`, loading it if it isn't.
   void Activate(Window* window, size_t index);
   void Cycle(Window* window, int delta);
   void CloseTab(Window* window, size_t index);
   void NewTab(Window* window);
-  // A window of its own for the site's home page (Ctrl+N).
-  void NewWindow(Window* window);
+  // A window of its own for `url`, or the site's home page if empty
+  // (Ctrl+N, Shift+Enter in the address).
+  void NewWindow(Window* window, const GURL& url);
   // Remembers a tab going away, for ReopenClosed().
   void RememberClosed(const Tab& tab);
   // The last tab closed comes back, with its history, in `window`.
@@ -276,6 +343,9 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   // only when the whole-MB figure does.
   void UpdateMemory();
   void OnMemoryRead(std::optional<int> megabytes);
+  // Starts or stops reading the memory, and retitles the windows (the
+  // setting changed).
+  void ApplyShowMemory();
   // `page_title` with the site's memory after it.
   std::u16string WindowTitle(const std::u16string& page_title) const;
 

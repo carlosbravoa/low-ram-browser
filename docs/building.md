@@ -89,3 +89,25 @@ lrb follows Chromium **Stable** (Extended Stable has no Linux releases). `CHROMI
 H.264/AAC decoders. Distributing binaries with them may require patent
 licenses depending on jurisdiction and volume. Building for evaluation is
 fine; decide before shipping.
+
+## Standard mode needs user namespaces
+
+In standard mode ([docs/design.md](design.md#modes)) lrb runs Chromium's
+own renderer sandbox, which creates user namespaces. Ubuntu 23.10 and later
+restrict unprivileged user namespaces to programs with an AppArmor
+profile, so `lrb_coordinator` checks at start (`lrb --lrb-sandbox-check`)
+and falls back to lean mode, logging why, when they are refused. To allow
+standard mode there, give the installed browser a profile that permits
+`userns`: a minimal one is
+
+```
+abi <abi/4.0>,
+include <tunables/global>
+profile lrb /home/*/.local/opt/low-ram-browser/lib/lrb flags=(unconfined) {
+  userns,
+}
+```
+
+saved as `/etc/apparmor.d/lrb` and loaded with
+`sudo apparmor_parser -r /etc/apparmor.d/lrb` (adjust the path to where
+lrb is installed). Lean mode never needs it.

@@ -10,6 +10,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "components/performance_manager/embedder/graph_features.h"
 #include "components/performance_manager/embedder/performance_manager_lifetime.h"
@@ -19,11 +20,13 @@
 #include "lrb/browser/list_updater.h"
 #include "lrb/browser/lrb_browser_context.h"
 #include "lrb/browser/lrb_content_browser_client.h"
+#include "lrb/browser/release_check.h"
 #include "lrb/browser/saved_windows.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/browser/ui/settings_dialog.h"
 #include "lrb/common/lrb_switches.h"
+#include "lrb/common/settings.h"
 #include "lrb/coordinator/rules.h"
 #include "net/base/module/net_module.h"
 #include "net/grit/net_resources.h"
@@ -78,6 +81,8 @@ int LrbBrowserMainParts::PreMainMessageLoopRun() {
   off_the_record_browser_context_->GetOriginTrialsControllerDelegate();
 
   Shell::Initialize(std::make_unique<LrbPlatformDelegate>());
+  // The setting; read here, while the UI thread may still block.
+  LrbPlatformDelegate::SetShowMemory(Settings::Read().show_memory);
   net::NetModule::SetResourceProvider(PlatformResourceProvider);
   // Only when asked for: a debugging server would let any local process
   // drive every window, a bank's included.
@@ -117,6 +122,15 @@ void LrbBrowserMainParts::OpenFirstWindow() {
     list_updater_->Start();
     return;
   }
+  if (command_line.HasSwitch(switches::kCheckRelease)) {
+    // The release check: no window either; exits when done or failed.
+    release_check_ = std::make_unique<ReleaseCheck>(
+        browser_context_.get(),
+        command_line.GetSwitchValuePath(switches::kCheckRelease),
+        base::BindOnce(&Shell::Shutdown));
+    release_check_->Start();
+    return;
+  }
   const base::CommandLine::StringVector& args = command_line.GetArgs();
   GURL startup_url = args.empty() ? GURL() : GURL(args[0]);
   if (!startup_url.is_valid() || !startup_url.has_scheme()) {
@@ -129,6 +143,14 @@ void LrbBrowserMainParts::OpenFirstWindow() {
               command_line.GetSwitchValueASCII(switches::kWindowBounds))) {
     LrbPlatformDelegate::SetNextWindowBounds(
         gfx::Rect(bounds->x, bounds->y, bounds->width, bounds->height));
+  }
+  // Replacing another site's window (lean mode): the coordinator hides that
+  // one when this one is on screen.
+  uint64_t handoff = 0;
+  if (base::StringToUint64(command_line.GetSwitchValueASCII(switches::kHandoff),
+                           &handoff) &&
+      handoff) {
+    client_->ReportShownOnNextWindow(handoff);
   }
   // Left from another site's page: Back on the first page returns there.
   LrbPlatformDelegate::SetNextWindowBackUrl(
@@ -147,6 +169,7 @@ void LrbBrowserMainParts::PostMainMessageLoopRun() {
   DCHECK_EQ(Shell::windows().size(), 0u);
   // Before the browser context it points to.
   list_updater_.reset();
+  release_check_.reset();
   LrbDevToolsManagerDelegate::StopRemoteDebugging();
   browser_context_.reset();
   off_the_record_browser_context_.reset();

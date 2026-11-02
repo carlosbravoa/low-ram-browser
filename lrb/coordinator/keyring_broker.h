@@ -28,9 +28,16 @@ namespace lrb::coordinator {
 //   af-get <id>                          af <id> ok <record> | af <id> none
 //   af-save <id> <record>                af-saved <id> 0|1
 //
+//   (from the standard instance, each pw-* line ends with " <site>": the
+//   site the origin belongs to)
+//
 // <id> is the instance's, letters and digits; the rest percent-encoded.
 // Passwords: only for the instance's own site (from the profile directory
 // the coordinator gave it, never what it says) and origins on that site.
+// The standard instance (lrb/common/mode.h) holds every site in one
+// process tree under Chromium's site isolation, where the browser process
+// is trusted as in Chrome: it names the site, and the origin must still
+// belong to it.
 // Autofill: one record (name, address, ...) shared by every site, so any
 // site's instance can read it; the instance asks the user first, which a
 // hijacked one could skip (README, docs/design.md).
@@ -43,7 +50,8 @@ class KeyringBroker {
   ~KeyringBroker();
 
   // A request from the instance on `fd`, whose site is `site` (from its
-  // profile; empty: none, refused).
+  // profile; empty: none, refused; "*": the standard instance, whose pw-*
+  // requests name their site as their last word).
   void Handle(int fd,
               const std::string& site,
               const std::string& command,

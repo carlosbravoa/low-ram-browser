@@ -11,26 +11,47 @@ It is built on Chromium's `//content` layer, not the Chrome product, and
 follows Chromium's Stable releases. Every change is judged by measured
 memory, and keeping mainstream sites working is the hard constraint.
 
-**Status: experimental.** It is usable day to day. Each site's process runs
-under whole-browser OS confinement (Landlock, seccomp) in place of
-Chromium's per-renderer sandbox; see [Security](#security).
+**Status: experimental.** It is usable day to day.
+
+lrb has two modes and picks one each time it starts
+([docs/design.md](docs/design.md#modes)):
+
+- **Lean**, for machines where memory is tight (a 2 GB laptop, a 1 GB
+  Raspberry Pi, a kiosk): one single-process instance per site, each with
+  its own profile, confined as a whole (Landlock, seccomp) in place of
+  Chromium's per-renderer sandbox. Sites never share a process or a cookie
+  jar; signing in to Google serves one site at a time.
+- **Standard**, when there is memory to spare (3 GB of RAM or more, 1.5 GB
+  free at start, and a working sandbox): Chromium's usual processes,
+  sandboxed renderers with site isolation, one browser and one profile for
+  every site, so signing in once serves every site, as in Chrome. Still
+  without the Chrome layer, with the same bar, content blocking and
+  defaults.
+
+Settings can force either. The security target is today's standard
+(Chrome's): never lower, and in lean mode higher in some places and lower
+in others; see [Security](#security).
 
 ## How it saves memory
 
-- **One site per window, one process per window.** Each site gets its own
-  single-process browser instance and its own profile, so sites never share
-  a process or a cookie jar. Tabs exist within a site's window. Leaving a
-  site replaces the window. ([docs/design.md](docs/design.md))
+- **Lean mode: one site per window, one process per window.** Each site
+  gets its own single-process browser instance and its own profile, so
+  sites never share a process or a cookie jar. Tabs exist within a site's
+  window. Leaving a site swaps the window for the other site's and parks
+  the one left (hidden, alive, first to go under pressure): Back brings it
+  straight back. ([docs/design.md](docs/design.md))
 - **Pressure-driven.** Background tabs and windows sleep under memory
-  pressure, keeping their history, and the oldest close only as a last
-  resort. A small coordinator process that never loads web content decides.
+  pressure (below 30% or 512 MB available, whichever is less), keeping
+  their history and sparing pages with unsaved changes, and the oldest
+  close only as a last resort. A small coordinator process that never
+  loads web content decides.
 - **Content blocking** with Brave's adblock-rust (uBlock Origin-compatible
   lists), built once and shared read-only by every instance.
 - **No autoplay**, muted or not, before the user interacts with the page.
 - **Lean defaults:** software compositing (the GPU is an option),
-  low-end-device mode, V8 optimizing for size, no back-forward cache, no
-  prerendering, and Stable's feature defaults without Chromium's
-  experiment test config.
+  no prerendering, and Stable's feature defaults without Chromium's
+  experiment test config; in lean mode also low-end-device mode, V8
+  optimizing for size and no back-forward cache.
 - **A native slim bar** (Views, about 2 MB per window) rather than an HTML
   one.
 
@@ -38,6 +59,10 @@ Chromium's per-renderer sandbox; see [Security](#security).
 
 - **Sites are kept apart by processes and profiles:** a site never shares
   a process or its cookies and storage with another site.
+- **In standard mode** the protection is Chromium's own: each site's
+  renderers in their own sandboxed processes, the browser process trusted,
+  as in Chrome. What follows is lean mode, where the whole instance is one
+  process.
 - **Every site's process is confined** by `lrb_coordinator` before it
   starts: Landlock limits it to its own profile, the browser's files, and
   what a desktop browser needs (system libraries, fonts, themes, sound,
@@ -142,12 +167,24 @@ and without the GPU.
 ## Everyday use
 
 - **Picks up where you left off.** Started from the applications menu, lrb
-  opens the site you used last (Settings: or an empty window, or a page of
-  your choice). A site's windows are saved as you browse, so after a
-  crash, a power cut or a logout they come back with their history the
-  next time you open the site. Closing a site's windows yourself forgets
-  them. What's saved stays in that site's profile on disk: its pages'
-  addresses, titles and form contents.
+  opens the sites you had open, the one you used last in front (Settings:
+  or an empty window, or a page of your choice). Windows are saved as you
+  browse, so after a crash, a power cut or a logout they come back with
+  their history. Closing a site's windows yourself forgets them. Logins
+  persist too: session cookies are kept and restored, as Chrome does when
+  it continues where you left off. What's saved stays in the profile on
+  disk: pages' addresses, titles, form contents and cookies.
+- **Another site, beside this one:** Shift+Enter (or Alt+Enter) in the
+  address opens what you typed in a new window and keeps this one. Typing
+  another site's address in a window with several tabs keeps the tab and
+  opens the site beside it.
+- **History.** Typing in the address also offers pages you visited (kept
+  in the site's profile in lean mode, in the one profile in standard
+  mode); the menu lists the most recent. "Forget this site's data" in the
+  menu removes its cookies, storage, cache, permissions and zoom.
+- **A newer release** shows as "Update available" in the bar (checked once
+  a day against the releases page; a click opens it). Installing is still
+  by hand.
 - **Bookmarks and suggestions.** The star in the bar (or Ctrl+D)
   bookmarks the page; the menu lists your bookmarks. Typing in the address
   offers bookmarks and sites you've visited, and completes an address as
@@ -176,9 +213,9 @@ and without the GPU.
 - **Dark pages**, per site, from the menu: pages that have a dark theme
   use it, Blink darkens the rest.
 - **Page icons** in the tabs and on the window (taskbar, Alt+Tab).
-- **The site's memory in the title bar**, after the page's title (e.g.
-  `Linux - Wikipedia — 259 MB`): the site's whole process, re-read every
-  5 s.
+- **The site's memory in the title bar** (Settings, off by default), after
+  the page's title (e.g. `Linux - Wikipedia — 259 MB`): the site's whole
+  process, re-read every 5 s.
 - **Shortcuts:**
 
   | Keys | Does |
@@ -187,7 +224,9 @@ and without the GPU.
   | Ctrl+W, middle-click on a tab | Close the tab |
   | Ctrl+Shift+T | Reopen the last closed tab, with its history |
   | Ctrl+Tab, Ctrl+1...9 | Switch tabs |
-  | Ctrl+L, Alt+D, F6 | Edit the address |
+  | Ctrl+L, Alt+D | Edit the address |
+  | Shift+Enter, Alt+Enter (in the address) | Open in a new window |
+  | F6, Shift+F6 | Move between the page, the address and a question |
   | Alt+Left, Alt+Right, Alt+Home | Back, forward, the site's home page |
   | F5, Ctrl+R, Esc | Reload, stop loading |
   | Ctrl+F, Ctrl+Plus/Minus/0 | Find, zoom (remembered per site) |
@@ -195,9 +234,10 @@ and without the GPU.
   | F11, Alt+F | Full screen, the menu |
 
 - **Settings** (in the menu): search engine, GPU or software rendering,
-  what to open on start, and how much content blocking (full lists,
-  lighter ones for less memory, or off; the menu also turns it off for
-  one site).
+  the mode (automatic, lean or standard; applies at the next start), what
+  to open on start, how much content blocking (full lists, lighter ones
+  for less memory, or off; the menu also turns it off for one site),
+  whether downloads ask where to save, and memory in window titles.
 - **About lrb** (in the menu): the version and the source it was built
   from, the Chromium version under it and the day Chromium released it
   (to compare with Chromium's latest release), a link to this repository,
@@ -216,7 +256,8 @@ On purpose, for memory or safety:
   present your screen (camera and microphone work, after asking).
 - **Translation:** it would send pages' text to an online service.
 - **Automatic updates:** new releases, with Chromium's security fixes,
-  are installed by hand (see [Download](#download)).
+  are installed by hand (see [Download](#download)); the bar says when
+  one exists.
 
 ## Download
 

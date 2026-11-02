@@ -27,6 +27,7 @@
 #include "content/public/browser/renderer_preferences_util.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
+#include "lrb/browser/history.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
@@ -77,6 +78,7 @@ Shell::Shell(std::unique_ptr<content::WebContents> web_contents)
   // navigator.languages, as the Accept-Language header.
   prefs->accept_languages = LrbContentBrowserClient::Get()->GetAcceptLangs(
       web_contents_->GetBrowserContext());
+  history_recorder_ = std::make_unique<HistoryRecorder>(web_contents_.get());
   windows().push_back(this);
 }
 
@@ -84,6 +86,7 @@ Shell::~Shell() {
   g_platform->CleanUp(this);
   std::erase(windows(), this);
   web_contents_->SetDelegate(nullptr);
+  history_recorder_.reset();
   web_contents_.reset();
   if (windows().empty()) {
     g_platform->DidCloseLastWindow();
@@ -452,6 +455,10 @@ void Shell::TitleWasSet(content::NavigationEntry* entry) {
   if (entry) {
     g_platform->SetTitle(this, entry->GetTitle());
   }
+}
+
+void Shell::DidFirstVisuallyNonEmptyPaint() {
+  g_platform->DidFirstVisuallyNonEmptyPaint(this);
 }
 
 }  // namespace lrb

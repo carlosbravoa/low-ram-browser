@@ -52,13 +52,26 @@ struct Suggestion;
 // A window's contents: lrb's slim bar above the page. One 36 px row: back,
 // forward, reload/stop, the site chip (the page's site, in a colour derived
 // from it) with the rest of the address beside it (click either to edit;
-// typing offers bookmarks and visited sites), a bookmark star, the count of
-// requests blocked on this page, and a menu. Native Views, not
-// HTML: a web-page bar measured 6.5 MB per window against 2.7 MB.
+// typing offers bookmarks, visited sites and this profile's history), a
+// bookmark star, the count of requests blocked on this page, "Update
+// available" when the coordinator found a newer lrb release, and a menu.
+// Native Views, not HTML: a web-page bar measured 6.5 MB per window against
+// 2.7 MB.
+//
+// Enter in the address opens in this tab; Shift+Enter or Alt+Enter in a new
+// window (another site's: that site's window, in lean mode its own
+// instance). F6 and Shift+F6 move the focus between the page, the address
+// and a question on screen.
 //
 // With 2+ tabs, a thin row of them under the bar. The bar shows the active
 // tab (its Shell); the delegate (LrbPlatformDelegate) owns the tabs and
-// tells which to show. Shells own themselves and outlive their time here.
+// tells which to show, and hides the whole window when the site is left in
+// lean mode. Shells own themselves and outlive their time here.
+//
+// In standard mode (one instance for every site) a new tab starts empty, the
+// menu closes all windows rather than "this site's", and content blocking
+// is turned off per site in the one instance (ContentBlocker::
+// SetSiteEnabled).
 class WindowView : public views::View,
                    public views::TextfieldController,
                    public ui::SimpleMenuModel::Delegate {
@@ -75,7 +88,9 @@ class WindowView : public views::View,
     base::RepeatingCallback<void(int)> cycle;  // +1 next, -1 previous
     base::RepeatingCallback<void(size_t)> close;
     base::RepeatingClosure new_tab;
-    base::RepeatingClosure new_window;     // Ctrl+N
+    // A window of this instance with the URL (Shift+Enter), or with the
+    // site's home page if it's empty (Ctrl+N).
+    base::RepeatingCallback<void(const GURL&)> new_window;
     base::RepeatingClosure reopen_closed;  // Ctrl+Shift+T
   };
   explicit WindowView(TabActions actions);
@@ -100,7 +115,7 @@ class WindowView : public views::View,
     gfx::ImageSkia icon;  // the page's (favicon.h); empty: none
   };
   void SetTabs(std::vector<TabLabel> tabs, size_t active);
-  // Where a new tab starts: the site's home page.
+  // Where a new tab starts: the site's home page; empty in standard mode.
   GURL NewTabUrl() const;
   void SetUrl(const GURL& url);
   void SetLoading(bool loading);
@@ -156,7 +171,8 @@ class WindowView : public views::View,
                   const std::u16string* input);
   void DropQuestionsFrom(const void* owner);
 
-  // A download from this window: its progress in the bar (the latest one).
+  // A download from this window: its progress in the bar (the latest one),
+  // and the last few in the button's menu.
   struct DownloadStatus {
     enum class State { kInProgress, kDone, kCanceled, kFailed };
     uint32_t id = 0;
@@ -205,12 +221,29 @@ class WindowView : public views::View,
     kPrint,
     kDarkPages,
     kBookmarks,  // the submenu
+    kHistory,    // the submenu
+    kForgetSite,
     kForgetFirst = 100,
+    kDownloadFirst = 500,
     kBookmarkFirst = 1000,
+    kHistoryFirst = 2000,
   };
+  // The menu's recent downloads at most.
+  static constexpr size_t kMaxDownloads = 5;
+  // The History submenu's pages at most.
+  static constexpr size_t kMaxHistoryItems = 15;
   void ShowDownloadMenu();
+  // The desktop's file manager on a download's folder.
+  void ShowInFolder(const DownloadStatus& download);
   // Content blocking off (or back on) for this site, then reload.
   void ToggleBlocking();
+  // "Forget this site's data": asked in the question row, then the site's
+  // cookies, storage and cache, its permission answers and zoom go, and its
+  // pages reload.
+  void AskForgetSite();
+  void ForgetSiteData(const std::string& site);
+  // The releases page (the "Update available" button).
+  void OpenReleases();
 
   // Find in page: a row under the bar.
   void OpenFind();
@@ -224,6 +257,11 @@ class WindowView : public views::View,
   void ShowNextQuestion();
   static void Unanswered(Question& question);
   void FocusQuestion();
+  // F6: a control of the question on screen, the one it prefers, else its
+  // first.
+  void FocusQuestionControl();
+  // F6 (+1), Shift+F6 (-1): page, address, question (if one is shown).
+  void CycleFocus(int direction);
   void Answer(std::optional<bool> accepted);
   void DropQuestions();
   void UpdateCapture();
@@ -232,7 +270,10 @@ class WindowView : public views::View,
   // another site this window was opened from.
   void GoBack();
   void FocusAddress();
-  void Navigate(std::u16string_view text);
+  // What was typed in the address: an address, else a search; in this tab
+  // or a new window.
+  void Navigate(std::u16string_view text, bool new_window);
+  void Open(bool new_window, const GURL& url);
   void SetBlocked(int count);
   // The menu, once the bookmarks for its submenu are known.
   void ShowMenu();
@@ -270,6 +311,7 @@ class WindowView : public views::View,
   // ui::SimpleMenuModel::Delegate:
   void ExecuteCommand(int command_id, int event_flags) override;
   bool IsCommandIdChecked(int command_id) const override;
+  bool IsCommandIdEnabled(int command_id) const override;
   bool GetAcceleratorForCommandId(int command_id,
                                   ui::Accelerator* accelerator) const override;
 
@@ -301,6 +343,9 @@ class WindowView : public views::View,
   raw_ptr<views::LabelButton> blocked_ = nullptr;
   raw_ptr<views::LabelButton> download_ = nullptr;
   std::optional<DownloadStatus> download_status_;
+  // This window's last downloads, newest first (kMaxDownloads).
+  std::vector<DownloadStatus> downloads_;
+  raw_ptr<views::LabelButton> update_ = nullptr;
   ui::SimpleMenuModel download_menu_model_{this};
   raw_ptr<views::View> tab_row_ = nullptr;
   raw_ptr<views::View> question_row_ = nullptr;
@@ -327,6 +372,8 @@ class WindowView : public views::View,
   ui::SimpleMenuModel menu_model_{this};
   ui::SimpleMenuModel bookmarks_menu_model_{this};
   std::vector<GURL> bookmark_urls_;  // the submenu's, by command id
+  ui::SimpleMenuModel history_menu_model_{this};
+  std::vector<GURL> history_urls_;  // the submenu's, by command id
   std::unique_ptr<views::MenuRunner> menu_runner_;
   std::unique_ptr<ShortcutHandler> shortcuts_;
   int find_request_id_ = 0;

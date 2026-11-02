@@ -64,6 +64,10 @@ std::string FormatBounds(const WindowBounds& bounds);
 std::optional<std::string> JsonString(std::string_view json,
                                       std::string_view key);
 
+// The boolean value of `key` in the same kind of object: true or false.
+// Nothing if the key is missing or its value isn't a boolean.
+std::optional<bool> JsonBool(std::string_view json, std::string_view key);
+
 }  // namespace lrb::coordinator
 
 #endif  // LRB_COORDINATOR_RULES_H_

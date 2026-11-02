@@ -4,18 +4,21 @@
 
 #include "lrb/browser/site_window_throttle.h"
 
+#include <optional>
+
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "lrb/browser/shell.h"
 #include "lrb/browser/lrb_content_browser_client.h"
-#include "lrb/browser/saved_windows.h"
 #include "lrb/browser/site.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace lrb {
 
@@ -37,6 +40,10 @@ void CloseSoon(content::WebContents* contents) {
                      contents->GetWeakPtr()));
 }
 
+// Without a coordinator to say when the other site's window is on screen,
+// the window left hides after this long.
+constexpr base::TimeDelta kStandaloneHideDelay = base::Milliseconds(1500);
+
 }  // namespace
 
 SiteWindowThrottle::SiteWindowThrottle(
@@ -51,6 +58,13 @@ SiteWindowThrottle::WillStartRequest() {
   content::NavigationHandle* handle = navigation_handle();
   if (!handle->IsInPrimaryMainFrame()) {
     return PROCEED;  // iframes are third-party content, not navigation
+  }
+  if (client_->standard()) {
+    // Every site in this one instance: nothing to keep apart.
+    if (!handle->IsRendererInitiated()) {
+      client_->ReportActive();
+    }
+    return PROCEED;
   }
   const std::string target = SiteForUrl(handle->GetURL());
   if (target.empty()) {
@@ -125,30 +139,47 @@ SiteWindowThrottle::WillStartRequest() {
     VLOG(1) << "lrb: " << target << " opens in its own window, not " << site
             << "'s";
     client_->OpenSiteWindow(target, handle->GetURL());
-  } else {
-    // Leaving the site (a typed address, a plain link): the window moves on.
-    // The site's window opens in this one's place and this one closes; the
-    // last window of a site takes its process with it. Keeping both would
-    // double the processes, and the memory.
-    VLOG(1) << "lrb: " << site << "'s window moves on to " << target;
-    client_->OpenSiteWindow(target, handle->GetURL(),
-                            LrbPlatformDelegate::WindowBoundsOf(contents),
-                            contents->GetLastCommittedURL());
-    // The site's last tab: save it, so Back from the new site restores it
-    // with its history (its process ends with it).
-    Shell* shell = Shell::FromWebContents(contents);
-    if (shell && LrbPlatformDelegate::TabCount() == 1) {
-      SaveLeftWindow(shell, site, base::BindOnce(
-                                [](base::WeakPtr<content::WebContents> left) {
-                                  if (left) {
-                                    CloseSoon(left.get());
-                                  }
-                                },
-                                contents->GetWeakPtr()));
-      return CANCEL;
-    }
+    CloseSoon(contents);
+    return CANCEL;
   }
-  CloseSoon(contents);
+
+  // Leaving the site (a typed address, a plain link): the other site's
+  // window opens in this one's place. This one stays until that one is on
+  // screen, so the user sees a swap, not a gap, then hides: the instance is
+  // parked, its pages and sign-ins alive, and Back from the other site's
+  // first page shows it again at once.
+  const std::optional<gfx::Rect> bounds =
+      LrbPlatformDelegate::WindowBoundsOf(contents);
+  Shell* shell = Shell::FromWebContents(contents);
+  if (shell && LrbPlatformDelegate::TabCount() == 1) {
+    VLOG(1) << "lrb: " << site << "'s window hands over to " << target;
+    const uint64_t handoff = client_->StartHandoff(contents);
+    client_->OpenSiteWindow(target, handle->GetURL(), bounds,
+                            contents->GetLastCommittedURL(),
+                            /*restore=*/false, handoff);
+    if (!client_->has_coordinator()) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](base::WeakPtr<content::WebContents> left) {
+                if (left) {
+                  LrbPlatformDelegate::HideWindowOf(left.get());
+                }
+              },
+              contents->GetWeakPtr()),
+          kStandaloneHideDelay);
+    }
+    return CANCEL;
+  }
+  // Leaving from one tab of several: the tab stays, and the other site's
+  // window opens beside this one, where both can be seen. Nothing hides.
+  VLOG(1) << "lrb: " << target << " opens beside " << site << "'s window";
+  std::optional<gfx::Rect> beside = bounds;
+  if (beside) {
+    beside->Offset(32, 32);
+  }
+  client_->OpenSiteWindow(target, handle->GetURL(), beside,
+                          contents->GetLastCommittedURL());
   return CANCEL;
 }
 

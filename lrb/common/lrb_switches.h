@@ -64,13 +64,44 @@ inline constexpr char kResume[] = "lrb-resume";
 inline constexpr char kMultiProcess[] = "lrb-multi-process";
 inline constexpr char kGpu[] = "lrb-gpu";
 
+// How this process runs (lrb_coordinator decides per start, lrb/common/
+// mode.h): "lean" (default), one single-process instance per site, confined
+// as a whole; or "standard", Chromium's usual processes and sandbox, every
+// site in this one browser with one shared profile, as on machines with
+// memory to spare.
+inline constexpr char kMode[] = "lrb-mode";
+
+// Print the site (registrable domain) of this URL and exit, before any of
+// Chromium starts: how lrb_coordinator finds a site without a browser.
+inline constexpr char kSiteOf[] = "lrb-site-of";
+
+// Exit 0 if this process can create a user namespace (Chromium's renderer
+// sandbox needs one), 1 if not; before any of Chromium starts.
+inline constexpr char kSandboxCheck[] = "lrb-sandbox-check";
+
+// This window replaces another site's: once its first window has shown
+// (first paint), tell the coordinator "shown <token>", which hides the
+// window that was left.
+inline constexpr char kHandoff[] = "lrb-handoff";
+
+// The newest lrb release, "0.1.0-alpha.7" (the coordinator's release check):
+// the bar offers the update when it is newer than Version().
+inline constexpr char kLatestRelease[] = "lrb-latest-release";
+
+// Run as the release check instead of a browser: fetch the newest release's
+// tag, write it to this file, exit.
+inline constexpr char kCheckRelease[] = "lrb-check-release";
+
+// Standard mode, renderers: sites the user turned content blocking off for,
+// comma-separated (ContentBlocker::EnabledFor).
+inline constexpr char kBlockingOffSites[] = "lrb-blocking-off-sites";
+
 // Dark pages on every site, whatever each site's choice (measuring, and
 // for whoever wants them everywhere).
 inline constexpr char kDarkPages[] = "lrb-dark-pages";
 
 // Show only the settings window, then exit (started by the coordinator: the
-// one process allowed to write the settings). "first-start": with the first
-// start's question about the GPU.
+// one process allowed to write the settings).
 inline constexpr char kSettingsWindow[] = "lrb-settings";
 
 }  // namespace lrb::switches

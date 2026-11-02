@@ -6,12 +6,16 @@
 #ifndef LRB_BROWSER_LRB_CONTENT_BROWSER_CLIENT_H_
 #define LRB_BROWSER_LRB_CONTENT_BROWSER_CLIENT_H_
 
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "content/public/browser/content_browser_client.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
@@ -19,16 +23,33 @@
 
 class GURL;
 
+namespace base {
+class CommandLine;
+}
+
+namespace content {
+class WebContents;
+}
+
 namespace lrb {
 
 class CoordinatorClient;
 class LrbBrowserContext;
 class LrbBrowserMainParts;
 
-// What the browser does for content: the one-site-per-window rule, the
-// connection to lrb_coordinator, content blocking, windows, sign-in, the
-// network's settings. From content_shell's ShellContentBrowserClient without
-// its web-test and browser-test hooks.
+// What the browser does for content: the one-site-per-instance rule (lean
+// mode), the connection to lrb_coordinator, content blocking, windows,
+// sign-in, the network's settings. From content_shell's
+// ShellContentBrowserClient without its web-test and browser-test hooks.
+//
+// Lean mode: the instance shows one site; another site's pages open in that
+// site's instance. Leaving a site parks the instance: its window hides once
+// the other site's window is on screen (the coordinator's hand-off: "open
+// ... handoff=<n>", then "hide <n>"), and it stays alive with its pages
+// until Back shows it again or the coordinator needs the memory.
+//
+// Standard mode (lrb/common/mode.h): one instance for every site, with
+// Chromium's sandboxed renderers and site isolation; no site rule anywhere.
 class LrbContentBrowserClient : public content::ContentBrowserClient {
  public:
   LrbContentBrowserClient();
@@ -39,7 +60,16 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   // The browser's one instance.
   static LrbContentBrowserClient* Get();
 
-  // The one site this instance shows; empty until known.
+  // Standard mode: every site in this instance, no site rule.
+  bool standard() const { return standard_; }
+  // Whether the user typed into a form of `contents`' page (Chrome's tab
+  // discarding spares such pages too): performance_manager's frame nodes,
+  // which the renderer tells about form interaction. An unload handler
+  // alone says nothing: most sites register one for analytics.
+  static bool HasUnsavedInput(content::WebContents* contents);
+
+  // Lean mode: the one site this instance shows; empty until known (and
+  // always in standard mode).
   const std::string& site() const { return site_; }
   void SetSite(const std::string& site);
 
@@ -52,11 +82,34 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   // With `bounds` (screen origin, page size), the new window replaces one
   // of ours and opens in its place. `back`: the page it was left from, for
   // Back. `restore`: going Back to `site`, so restore the window it left.
+  // `handoff` (StartHandoff()'s token, 0 for none): the window at `bounds`
+  // is being replaced, and the coordinator tells this instance to hide it
+  // ("hide <n>") once the new one is on screen.
   void OpenSiteWindow(const std::string& site,
                       const GURL& url,
                       std::optional<gfx::Rect> bounds = std::nullopt,
                       const GURL& back = GURL(),
-                      bool restore = false);
+                      bool restore = false,
+                      uint64_t handoff = 0);
+
+  // A token for a hand-off of `leaving`'s window (from 1, per process): the
+  // coordinator's "hide <token>" hides it, if it's still there.
+  uint64_t StartHandoff(content::WebContents* leaving);
+
+  // Tells the coordinator "shown <handoff>" when the next window is on
+  // screen: this instance's window replaces the one that hand-off left.
+  void ReportShownOnNextWindow(uint64_t handoff);
+
+  // The platform delegate's report whenever the set of visible windows
+  // changes: tells the coordinator, on change, whether every window is
+  // hidden ("parked 1": the instance is parked) or not ("parked 0").
+  void ReportWindowsHidden(bool all_hidden);
+
+  // Standard mode, after the user turned content blocking off (or on) for
+  // `site`: saves the list in the profile, ends the renderers showing the
+  // site (they have the old list: --lrb-blocking-off-sites) and reloads
+  // its pages, bypassing the cache, in new ones.
+  void ReloadSiteBypassingCache(const std::string& site);
 
   // Tells the coordinator how many live tabs aren't shown (when it
   // changes): they can sleep before any site closes.
@@ -108,6 +161,10 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
       service_manager::BinderRegistry* registry,
       blink::AssociatedInterfaceRegistry* associated_registry,
       content::RenderProcessHost* render_process_host) override;
+  // Renderers and the zygotes get the mode, the engine file and (standard
+  // mode) the sites blocking is off for; every other child the mode.
+  void AppendExtraCommandLineSwitches(base::CommandLine* command_line,
+                                      int child_process_id) override;
   void ExposeInterfacesToChild(
       mojo::BinderMapWithContext<content::BrowserChildProcessHost*>* map)
       override;
@@ -139,8 +196,9 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   std::vector<base::FilePath> GetNetworkContextsParentDirectory() override;
   bool HasErrorPage(int http_status_code) override;
   void OnWebContentsCreated(content::WebContents* web_contents) override;
-  // A link opened in the background (middle-click) becomes a tab that loads
-  // when first shown: no page is created for it now.
+  // No window or tab without a user gesture (Chrome's popup blocker). A link
+  // opened in the background (middle-click) becomes a tab that loads when
+  // first shown: no page is created for it now.
   bool CanCreateWindow(content::RenderFrameHost* opener,
                        const GURL& opener_url,
                        const GURL& opener_top_level_frame_url,
@@ -224,11 +282,20 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   void OnCoordinatorLine(const std::string& line);
 
   // Drops every window's page, keeping the windows and their history; a
-  // page comes back when its window is used again (ActivityTracker).
-  void DiscardPages();
+  // page comes back when its window is used again (ActivityTracker). Not
+  // critical: pages that would ask before leaving (unsaved changes) stay.
+  void DiscardPages(bool critical);
+
+  // "show <url> [bounds=..] [back=..] [handoff=<n>]".
+  void Show(std::string_view args);
 
   raw_ptr<LrbBrowserMainParts> main_parts_ = nullptr;
+  const bool standard_;
   std::string site_;
+  uint64_t last_handoff_ = 0;
+  // Windows left for another site, until the coordinator says to hide them.
+  std::map<uint64_t, base::WeakPtr<content::WebContents>> handoffs_;
+  bool reported_parked_ = false;
   int reported_background_tabs_ = 0;
   std::unique_ptr<CoordinatorClient> coordinator_;
   base::TimeTicks last_active_report_;

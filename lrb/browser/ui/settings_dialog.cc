@@ -14,6 +14,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/common/settings.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -22,6 +23,7 @@
 #include "ui/base/models/simple_combobox_model.h"
 #include "ui/color/color_id.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/radio_button.h"
 #include "ui/views/controls/combobox/combobox.h"
 #include "ui/views/controls/label.h"
@@ -41,25 +43,12 @@ class SettingsView : public views::View {
   METADATA_HEADER(SettingsView, views::View)
 
  public:
-  SettingsView(const Settings& settings, bool first_start)
-      : settings_(settings), first_start_(first_start) {
+  explicit SettingsView(const Settings& settings) : settings_(settings) {
     SetLayoutManager(std::make_unique<views::BoxLayout>(
                          views::BoxLayout::Orientation::kVertical,
                          gfx::Insets::VH(16, 20), 8))
         ->set_cross_axis_alignment(
             views::BoxLayout::CrossAxisAlignment::kStretch);
-    if (first_start) {
-      // The first start on a machine with a GPU: show
-      // the trade-off and ask; changeable later here.
-      Heading(u"Welcome to lrb");
-      Note(u"This computer has a graphics chip (GPU). lrb can draw pages "
-           u"with it, or without it in software. The GPU costs memory in "
-           u"every window: measured 7 to 55 MB more per window on a "
-           u"Raspberry Pi 3, about 12 MB on a desktop with NVIDIA graphics. "
-           u"How much smoother it makes scrolling and video hasn't been "
-           u"measured yet. Choose one below; you can change it later in "
-           u"Settings.");
-    }
 
     Heading(u"Search engine");
     std::vector<ui::SimpleComboboxModel::Item> items;
@@ -94,14 +83,25 @@ class SettingsView : public views::View {
     gpu_ = AddChildView(std::make_unique<views::RadioButton>(
         u"Use the GPU: smoother scrolling and video, more memory per window",
         /*group_id=*/1));
-    // The first start asks without suggesting an answer: neither is
-    // chosen until the user picks one (memory is measured, smoothness not).
-    if (!first_start) {
-      (settings.gpu.value_or(false) ? gpu_ : software_)->SetChecked(true);
-    }
+    (settings.gpu.value_or(false) ? gpu_ : software_)->SetChecked(true);
     Note(u"Without the GPU, pages can't use WebGL (3-D graphics: some maps, "
          u"games and visualizations). Applies to windows opened from now "
          u"on.");
+
+    Heading(u"Mode");
+    mode_automatic_ = AddChildView(std::make_unique<views::RadioButton>(
+        u"Automatic (by this computer's memory)", /*group_id=*/3));
+    mode_lean_ = AddChildView(std::make_unique<views::RadioButton>(
+        u"Lean: one process per site, least memory", /*group_id=*/3));
+    mode_standard_ = AddChildView(std::make_unique<views::RadioButton>(
+        u"Standard: Chromium's processes and sandbox, one profile, sign in "
+        u"once",
+        /*group_id=*/3));
+    (settings.mode == "lean"       ? mode_lean_
+     : settings.mode == "standard" ? mode_standard_
+                                   : mode_automatic_)
+        ->SetChecked(true);
+    Note(u"Applies at the next start of lrb.");
 
     Heading(u"On start");
     last_site_ = AddChildView(std::make_unique<views::RadioButton>(
@@ -147,6 +147,14 @@ class SettingsView : public views::View {
     Note(u"Ads and trackers, blocked with community lists (as uBlock Origin). "
          u"Applies to windows opened from now on; the menu turns it off for "
          u"one site.");
+
+    Heading(u"Other");
+    ask_downloads_ = AddChildView(
+        std::make_unique<views::Checkbox>(u"Ask where to save each download"));
+    ask_downloads_->SetChecked(settings.ask_downloads);
+    show_memory_ = AddChildView(std::make_unique<views::Checkbox>(
+        u"Show memory use in window titles"));
+    show_memory_->SetChecked(settings.show_memory);
   }
 
   void Heading(const std::u16string& text) {
@@ -180,15 +188,16 @@ class SettingsView : public views::View {
     } else {
       settings.search_url = SearchEngines()[index].url;
     }
-    if (first_start_ && !software_->GetChecked() && !gpu_->GetChecked()) {
-      software_->RequestFocus();  // the question needs an answer
-      return false;
-    }
-    // Rendering left as it was, never chosen: still unset (the first-start
-    // question asks then). Answering that question sets it either way.
-    if (first_start_ || gpu_->GetChecked() || settings_.gpu) {
+    // Rendering left as it was, never chosen: still unset (software, until
+    // the user chooses).
+    if (gpu_->GetChecked() || settings_.gpu) {
       settings.gpu = gpu_->GetChecked();
     }
+    settings.mode = mode_lean_->GetChecked()       ? "lean"
+                    : mode_standard_->GetChecked() ? "standard"
+                                                   : "";
+    settings.ask_downloads = ask_downloads_->GetChecked();
+    settings.show_memory = show_memory_->GetChecked();
     const std::string page = base::UTF16ToUTF8(startup_page_->GetText());
     if (page_->GetChecked()) {
       const GURL url(page);
@@ -214,6 +223,9 @@ class SettingsView : public views::View {
         FROM_HERE,
         {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
         base::BindOnce(base::IgnoreResult(&Settings::Write), settings));
+    // This process's windows at once (in the settings' own process there
+    // are none; the instances read it at their next start).
+    LrbPlatformDelegate::SetShowMemory(settings.show_memory);
     return true;
   }
 
@@ -228,7 +240,6 @@ class SettingsView : public views::View {
   }
 
   const Settings settings_;
-  const bool first_start_;
   std::unique_ptr<ui::SimpleComboboxModel> model_;
   size_t custom_index_ = 0;
   raw_ptr<views::Combobox> engine_ = nullptr;
@@ -236,12 +247,17 @@ class SettingsView : public views::View {
   raw_ptr<views::Label> custom_hint_ = nullptr;
   raw_ptr<views::RadioButton> software_ = nullptr;
   raw_ptr<views::RadioButton> gpu_ = nullptr;
+  raw_ptr<views::RadioButton> mode_automatic_ = nullptr;
+  raw_ptr<views::RadioButton> mode_lean_ = nullptr;
+  raw_ptr<views::RadioButton> mode_standard_ = nullptr;
   raw_ptr<views::RadioButton> last_site_ = nullptr;
   raw_ptr<views::RadioButton> blank_ = nullptr;
   raw_ptr<views::RadioButton> page_ = nullptr;
   raw_ptr<views::Textfield> startup_page_ = nullptr;
   std::unique_ptr<ui::SimpleComboboxModel> blocking_model_;
   raw_ptr<views::Combobox> blocking_ = nullptr;
+  raw_ptr<views::Checkbox> ask_downloads_ = nullptr;
+  raw_ptr<views::Checkbox> show_memory_ = nullptr;
 };
 
 BEGIN_METADATA(SettingsView)
@@ -253,13 +269,12 @@ class SettingsWindow {
  public:
   SettingsWindow(const Settings& settings,
                  gfx::NativeView parent,
-                 bool first_start = false,
                  base::OnceClosure closed = base::OnceClosure())
       : closed_(std::move(closed)) {
     delegate_ = std::make_unique<views::DialogDelegate>();
-    auto* view = delegate_->SetContentsView(
-        std::make_unique<SettingsView>(settings, first_start));
-    delegate_->SetTitle(first_start ? u"lrb" : u"Settings");
+    auto* view =
+        delegate_->SetContentsView(std::make_unique<SettingsView>(settings));
+    delegate_->SetTitle(u"Settings");
     // Alone (no parent): a window of its own, not modal to anything.
     if (parent) {
       delegate_->SetModalType(ui::mojom::ModalType::kWindow);
@@ -319,15 +334,15 @@ void ShowSettings(base::WeakPtr<views::View> parent) {
 }
 
 void ShowSettingsAlone(bool first_start, base::OnceClosure closed) {
+  // `first_start` is no longer used: the first start asks nothing.
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
       base::BindOnce(&Settings::Read),
       base::BindOnce(
-          [](bool first_start, base::OnceClosure closed, Settings settings) {
-            new SettingsWindow(settings, gfx::NativeView(), first_start,
-                               std::move(closed));
+          [](base::OnceClosure closed, Settings settings) {
+            new SettingsWindow(settings, gfx::NativeView(), std::move(closed));
           },
-          first_start, std::move(closed)));
+          std::move(closed)));
 }
 
 }  // namespace lrb

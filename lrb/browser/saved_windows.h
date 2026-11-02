@@ -30,9 +30,10 @@ class Shell;
 // discard leaves (ActivityTracker) is skipped.
 
 //
-// Also when a site's last window is left for another site (a typed address,
-// a link): that window alone is saved apart, and restored only when the
-// user comes back to it with Back.
+// Earlier versions also saved, apart, a site's last window when it was left
+// for another site, restored only when the user came back with Back. Leaving
+// now parks the instance instead (site_window_throttle.h), but such files
+// may still be in profiles: --lrb-restore-left still restores one.
 
 // The site's session: the same file, kept current while the site is open
 // (SessionChanged, a moment after tabs or pages change), so a crash, a kill
@@ -59,7 +60,8 @@ void SaveWindows(content::BrowserContext* browser_context,
                  base::OnceClosure done);
 
 // Saves `shell`'s window as the one `site` was left from, then runs `done`
-// on the UI thread.
+// on the UI thread. Nothing calls it since leaving parks the instance; kept
+// with the file format it writes, which OpenStartupWindows still reads.
 void SaveLeftWindow(Shell* shell,
                     const std::string& site,
                     base::OnceClosure done);

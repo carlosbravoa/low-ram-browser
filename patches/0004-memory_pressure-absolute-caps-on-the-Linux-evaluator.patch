@@ -1,0 +1,158 @@
+From 2087890b91c24eadcd424047609b74c44b5f2940 Mon Sep 17 00:00:00 2001
+From: Carlos Bravo <cbravoa@gmail.com>
+Date: Mon, 2 Nov 2026 20:10:01 -0300
+Subject: [PATCH] memory_pressure: absolute caps on the Linux evaluator's
+ thresholds
+
+The Linux evaluator engages moderate pressure below 30% of the tightest
+budget left and critical below 15%. Under a small cgroup limit that is
+right, but on a large machine a percentage alone counts gigabytes free
+as pressure: 15% of 32 GB is 4.8 GB, and listeners purge caches and
+collect garbage while memory is plentiful.
+
+New feature params moderate_max_mb (512) and critical_max_mb (256) cap
+the thresholds: a level engages when a budget has less left than its
+percent of the limit or its cap, whichever is less. A cap of 0 means
+none; a percent over 100 still means always. Under a limit of 1.7 GB
+or less (512 MB is 30% of it, 256 MB 15%) the percentages are the tighter
+ones, so small devices and capped cgroups behave as before.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../system_memory_pressure_evaluator_linux.cc | 44 ++++++++++++++++---
+ .../system_memory_pressure_evaluator_linux.h  | 12 ++++-
+ 2 files changed, 47 insertions(+), 9 deletions(-)
+
+diff --git a/components/memory_pressure/system_memory_pressure_evaluator_linux.cc b/components/memory_pressure/system_memory_pressure_evaluator_linux.cc
+index b4e5cae9f3780..e87f16c9e1358 100644
+--- a/components/memory_pressure/system_memory_pressure_evaluator_linux.cc
++++ b/components/memory_pressure/system_memory_pressure_evaluator_linux.cc
+@@ -40,6 +40,20 @@ BASE_FEATURE_PARAM(int,
+                    &kLinuxMemoryPressureEvaluator,
+                    "critical_percent",
+                    15);
++// Caps on those thresholds, in MB: a percentage alone counts gigabytes free
++// as pressure on a large machine (15% of 32 GB is 4.8 GB), purging caches
++// that cost nothing to keep. Under a small cgroup limit the percentage
++// stays the tighter one.
++BASE_FEATURE_PARAM(int,
++                   kModerateMaxMb,
++                   &kLinuxMemoryPressureEvaluator,
++                   "moderate_max_mb",
++                   512);
++BASE_FEATURE_PARAM(int,
++                   kCriticalMaxMb,
++                   &kLinuxMemoryPressureEvaluator,
++                   "critical_max_mb",
++                   256);
+ // PSI "some avg10" (percent) at or above which pressure is at least moderate,
+ // whatever the budgets say: tasks are already stalling on memory.
+ BASE_FEATURE_PARAM(double,
+@@ -141,6 +155,16 @@ std::optional<std::string> OwnCgroupPath(const base::FilePath& procfs_root) {
+   return std::nullopt;
+ }
+ 
++// Whether `budget` has less left than `percent` of its limit or `max_mb`,
++// whichever is less (`max_mb` 0: no cap). A percent over 100 always holds.
++bool BelowThreshold(const MemoryBudget& budget, int percent, int max_mb) {
++  if (percent > 100) {
++    return true;
++  }
++  return budget.available * 100 < budget.limit * percent &&
++         (max_mb <= 0 || budget.available < int64_t{max_mb} * 1024 * 1024);
++}
++
+ const char* LevelName(base::MemoryPressureLevel level) {
+   switch (level) {
+     case base::MEMORY_PRESSURE_LEVEL_NONE:
+@@ -160,10 +184,14 @@ SystemMemoryPressureEvaluator::SystemMemoryPressureEvaluator(
+     : memory_pressure::SystemMemoryPressureEvaluator(std::move(voter)),
+       moderate_percent_(kModeratePercent.Get()),
+       critical_percent_(kCriticalPercent.Get()),
++      moderate_max_mb_(kModerateMaxMb.Get()),
++      critical_max_mb_(kCriticalMaxMb.Get()),
+       psi_moderate_avg10_(kPsiModerateAvg10.Get()) {
+   VLOG(1) << "Linux memory pressure evaluator: moderate below "
+-          << moderate_percent_ << "%, critical below " << critical_percent_
+-          << "% of the tightest budget, polling every " << kPollPeriod.Get();
++          << moderate_percent_ << "% (at most " << moderate_max_mb_
++          << " MB), critical below " << critical_percent_ << "% (at most "
++          << critical_max_mb_ << " MB) of the tightest budget, polling every "
++          << kPollPeriod.Get();
+   timer_.Start(FROM_HERE, kPollPeriod.Get(),
+                base::BindRepeating(&SystemMemoryPressureEvaluator::Poll,
+                                    base::Unretained(this)));
+@@ -240,14 +268,15 @@ base::MemoryPressureLevel SystemMemoryPressureEvaluator::LevelFor(
+     const MemorySnapshot& snapshot,
+     int moderate_percent,
+     int critical_percent,
++    int moderate_max_mb,
++    int critical_max_mb,
+     double psi_moderate_avg10) {
+   base::MemoryPressureLevel level = base::MEMORY_PRESSURE_LEVEL_NONE;
+   for (const MemoryBudget& budget : snapshot.budgets) {
+-    const int64_t percent_left = budget.available * 100 / budget.limit;
+-    if (percent_left < critical_percent) {
++    if (BelowThreshold(budget, critical_percent, critical_max_mb)) {
+       return base::MEMORY_PRESSURE_LEVEL_CRITICAL;
+     }
+-    if (percent_left < moderate_percent) {
++    if (BelowThreshold(budget, moderate_percent, moderate_max_mb)) {
+       level = base::MEMORY_PRESSURE_LEVEL_MODERATE;
+     }
+   }
+@@ -262,8 +291,9 @@ void SystemMemoryPressureEvaluator::Poll() {
+   const MemorySnapshot snapshot = TakeSnapshot(
+       base::FilePath("/sys/fs/cgroup"), base::FilePath("/proc"));
+   const base::MemoryPressureLevel old_level = current_vote();
+-  const base::MemoryPressureLevel level = LevelFor(
+-      snapshot, moderate_percent_, critical_percent_, psi_moderate_avg10_);
++  const base::MemoryPressureLevel level =
++      LevelFor(snapshot, moderate_percent_, critical_percent_, moderate_max_mb_,
++               critical_max_mb_, psi_moderate_avg10_);
+   SetCurrentVote(level);
+ 
+   const base::TimeTicks now = base::TimeTicks::Now();
+diff --git a/components/memory_pressure/system_memory_pressure_evaluator_linux.h b/components/memory_pressure/system_memory_pressure_evaluator_linux.h
+index c83fa6e09fe58..3d8419905c01d 100644
+--- a/components/memory_pressure/system_memory_pressure_evaluator_linux.h
++++ b/components/memory_pressure/system_memory_pressure_evaluator_linux.h
+@@ -20,7 +20,8 @@
+ namespace memory_pressure::os_linux {
+ 
+ // Enables the Linux evaluator. Params (percent of the applicable limit left
+-// before a level engages; poll period; PSI escalation) are tunable with
++// before a level engages, capped in MB; poll period; PSI escalation) are
++// tunable with
+ // --enable-features=LinuxMemoryPressureEvaluator:moderate_percent/20/...
+ BASE_DECLARE_FEATURE(kLinuxMemoryPressureEvaluator);
+ 
+@@ -68,10 +69,15 @@ class SystemMemoryPressureEvaluator
+                                      const base::FilePath& procfs_root);
+ 
+   // The pressure level a snapshot implies: the worst level over all budgets,
+-  // raised to at least moderate when PSI shows sustained stalls.
++  // raised to at least moderate when PSI shows sustained stalls. A level
++  // engages when a budget has less left than its percent of the limit or
++  // its max in MB, whichever is less (a max of 0: no cap; a percent over
++  // 100: always).
+   static base::MemoryPressureLevel LevelFor(const MemorySnapshot& snapshot,
+                                             int moderate_percent,
+                                             int critical_percent,
++                                            int moderate_max_mb,
++                                            int critical_max_mb,
+                                             double psi_moderate_avg10);
+ 
+  private:
+@@ -79,6 +85,8 @@ class SystemMemoryPressureEvaluator
+ 
+   const int moderate_percent_;
+   const int critical_percent_;
++  const int moderate_max_mb_;
++  const int critical_max_mb_;
+   const double psi_moderate_avg10_;
+ 
+   base::RepeatingTimer timer_;
+-- 
+2.53.0
+

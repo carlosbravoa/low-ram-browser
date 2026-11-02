@@ -20,9 +20,11 @@ namespace lrb {
 class ListUpdater;
 class LrbBrowserContext;
 class LrbContentBrowserClient;
+class ReleaseCheck;
 
 // The browser process's startup and shutdown: the profile, the windows'
-// platform, the first window (or the filter-list updater), the connection to
+// platform, the first window (or a helper without one: the filter-list
+// updater, the release check, the settings window), the connection to
 // the coordinator. From content_shell's ShellBrowserMainParts without web
 // tests and other platforms; DevTools' remote debugging server starts only
 // when asked for (--remote-debugging-port/-pipe: tests, the harness), where
@@ -50,7 +52,7 @@ class LrbBrowserMainParts : public content::BrowserMainParts {
   void PostDestroyThreads() override;
 
  private:
-  // The first window, or the filter-list updater.
+  // The first window, or a helper without one.
   void OpenFirstWindow();
 
   const raw_ref<LrbContentBrowserClient> client_;
@@ -59,6 +61,7 @@ class LrbBrowserMainParts : public content::BrowserMainParts {
   std::unique_ptr<performance_manager::PerformanceManagerLifetime>
       performance_manager_lifetime_;
   std::unique_ptr<ListUpdater> list_updater_;
+  std::unique_ptr<ReleaseCheck> release_check_;
 };
 
 }  // namespace lrb

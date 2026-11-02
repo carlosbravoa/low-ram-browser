@@ -14,8 +14,9 @@ class View;
 
 namespace lrb {
 
-// The settings window (lrb/common/settings.h): search engine and
-// rendering. Native Views, not a web page: no page can ever reach it. It
+// The settings window (lrb/common/settings.h): search engine, rendering,
+// mode, what happens on start, content blocking, downloads and the memory
+// in window titles. Native Views, not a web page: no page can ever reach it. It
 // exists only while open.
 // `parent`: a view of the window it belongs to.
 void ShowSettings(base::WeakPtr<views::View> parent);
@@ -23,8 +24,8 @@ void ShowSettings(base::WeakPtr<views::View> parent);
 // The settings window on its own (lrb --lrb-settings): the process the
 // coordinator starts to change the settings, the only one allowed to write
 // them (confined instances can't: a hijacked page could change the search
-// engine). `first_start`: the first start's question about the GPU (its
-// memory trade-off) above the settings. `closed` runs when it closes.
+// engine). `first_start` is ignored (the first start no longer asks
+// anything; kept for the caller). `closed` runs when it closes.
 void ShowSettingsAlone(bool first_start, base::OnceClosure closed);
 
 }  // namespace lrb

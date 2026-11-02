@@ -32,6 +32,12 @@ class ZoomLevels {
   ZoomLevels& operator=(const ZoomLevels&) = delete;
   ~ZoomLevels();
 
+  // Resets the zoom of every host of `site` (a registrable domain, as
+  // SiteForUrl gives it) in `context`: "Forget this site's data". The saved
+  // file follows (OnChanged).
+  static void ForgetSite(content::BrowserContext* context,
+                         const std::string& site);
+
  private:
   void OnLoaded(std::optional<std::string> json);
   void OnChanged(const content::HostZoomMap::ZoomLevelChange& change);

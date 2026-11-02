@@ -5,12 +5,16 @@
 #include "lrb/browser/bookmarks.h"
 
 #include <map>
+#include <set>
 #include <string_view>
 #include <utility>
 
+#include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "lrb/browser/history.h"
+#include "lrb/browser/lrb_browser_context.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/coordinator/bookmarks.h"
 
@@ -23,6 +27,8 @@ namespace {
 constexpr size_t kMaxUrl = coordinator::kMaxBookmarkUrl;
 constexpr size_t kMaxTitle = 150;  // characters; encoded up to ~6x
 constexpr size_t kMaxTyped = 200;
+// The address bar's list at most (the coordinator's cap).
+constexpr size_t kMaxSuggestions = 8;
 
 // Requests waiting for their answer, by id.
 struct Pending {
@@ -69,13 +75,45 @@ std::string Title(const std::u16string& title) {
 }  // namespace
 
 void Suggest(const std::u16string& text, SuggestionsCallback done) {
-  LrbContentBrowserClient* client = Coordinated();
-  if (!client || text.empty() || text.size() > kMaxTyped) {
+  if (text.empty() || text.size() > kMaxTyped) {
     std::move(done).Run({});
     return;
   }
+  // The coordinator's bookmarks and sites first, then this profile's
+  // history (pages, not just sites).
+  SuggestionsCallback with_history = base::BindOnce(
+      [](std::u16string text, SuggestionsCallback done,
+         std::vector<Suggestion> found) {
+        LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
+        History* history =
+            client ? History::For(client->browser_context()) : nullptr;
+        if (history && found.size() < kMaxSuggestions) {
+          std::set<GURL> urls;
+          for (const Suggestion& suggestion : found) {
+            urls.insert(suggestion.url);
+          }
+          for (History::Page& page : history->Match(text, kMaxSuggestions)) {
+            if (found.size() == kMaxSuggestions) {
+              break;
+            }
+            if (urls.insert(page.url).second) {
+              Suggestion suggestion;
+              suggestion.url = std::move(page.url);
+              suggestion.title = std::move(page.title);
+              found.push_back(std::move(suggestion));
+            }
+          }
+        }
+        std::move(done).Run(std::move(found));
+      },
+      text, std::move(done));
+  LrbContentBrowserClient* client = Coordinated();
+  if (!client) {
+    std::move(with_history).Run({});
+    return;
+  }
   const uint64_t id = NextId();
-  Requests()[id].done = std::move(done);
+  Requests()[id].done = std::move(with_history);
   client->SendToCoordinator(
       "suggest " + base::NumberToString(id) + " " +
       coordinator::EncodeText(base::UTF16ToUTF8(text)));

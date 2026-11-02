@@ -6,6 +6,8 @@
 #include "lrb/browser/lrb_content_browser_client.h"
 
 #include <memory>
+#include <set>
+#include <string_view>
 #include <vector>
 
 #include "base/command_line.h"
@@ -22,20 +24,29 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "base/values.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/network_hints/browser/simple_network_hints_handler_impl.h"
 #include "components/performance_manager/embedder/binders.h"
 #include "components/performance_manager/embedder/performance_manager_registry.h"
+#include "components/performance_manager/public/graph/frame_node.h"
+#include "components/performance_manager/public/performance_manager.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/client_certificate_delegate.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle_registry.h"
+#include "content/public/browser/reload_type.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_instance.h"
+#include "content/public/browser/spare_render_process_host_manager.h"
 #include "content/public/browser/speech_recognition_manager_delegate.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
 #include "lrb/browser/activity_tracker.h"
 #include "lrb/browser/blocking_url_loader_factory.h"
@@ -64,6 +75,7 @@
 #include "lrb/common/content_blocker.h"
 #include "lrb/common/safety_list.h"
 #include "lrb/common/lrb_switches.h"
+#include "lrb/common/mode.h"
 #include "lrb/coordinator/rules.h"
 #include "net/base/features.h"
 #include "net/dns/public/dns_over_https_config.h"
@@ -72,6 +84,7 @@
 #include "mojo/public/cpp/bindings/binder_map.h"
 #include "net/ssl/client_cert_identity.h"
 #include "net/ssl/ssl_private_key.h"
+#include "sandbox/policy/switches.h"
 #include "services/network/public/cpp/url_loader_factory_builder.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
@@ -127,8 +140,10 @@ performance_manager::PerformanceManagerRegistry& PerformanceManager() {
 }  // namespace
 
 LrbContentBrowserClient::LrbContentBrowserClient()
-    : site_(base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          switches::kSite)) {
+    : standard_(StandardMode()),
+      site_(standard_ ? std::string()
+                      : base::CommandLine::ForCurrentProcess()
+                            ->GetSwitchValueASCII(switches::kSite)) {
   g_client = this;
 }
 
@@ -154,7 +169,8 @@ void LrbContentBrowserClient::OpenSiteWindow(const std::string& site,
                                              const GURL& url,
                                              std::optional<gfx::Rect> bounds,
                                              const GURL& back,
-                                             bool restore) {
+                                             bool restore,
+                                             uint64_t handoff) {
   const std::string place =
       bounds ? coordinator::FormatBounds({bounds->x(), bounds->y(),
                                           bounds->width(), bounds->height()})
@@ -173,9 +189,101 @@ void LrbContentBrowserClient::OpenSiteWindow(const std::string& site,
     if (restore) {
       line += " restore";
     }
+    if (handoff) {
+      line += " handoff=" + base::NumberToString(handoff);
+    }
     coordinator_->Send(line);
   } else {
     LaunchSiteWindow(site, url, place, back_url, restore);
+  }
+}
+
+uint64_t LrbContentBrowserClient::StartHandoff(content::WebContents* leaving) {
+  const uint64_t handoff = ++last_handoff_;
+  handoffs_[handoff] = leaving->GetWeakPtr();
+  return handoff;
+}
+
+void LrbContentBrowserClient::ReportShownOnNextWindow(uint64_t handoff) {
+  if (!coordinator_) {
+    return;  // without one, the window left hides on a timer
+  }
+  LrbPlatformDelegate::SetNextWindowShown(base::BindOnce(
+      &LrbContentBrowserClient::SendToCoordinator, base::Unretained(this),
+      "shown " + base::NumberToString(handoff)));
+}
+
+void LrbContentBrowserClient::ReportWindowsHidden(bool all_hidden) {
+  if (all_hidden == reported_parked_) {
+    return;
+  }
+  reported_parked_ = all_hidden;
+  VLOG(1) << "lrb: " << (all_hidden ? "parked" : "shown again");
+  SendToCoordinator(all_hidden ? "parked 1" : "parked 0");
+}
+
+void LrbContentBrowserClient::ReloadSiteBypassingCache(
+    const std::string& site) {
+  if (site.empty()) {
+    return;
+  }
+  // The list survives restarts: the browser reads it at startup
+  // (lrb_main_delegate.cc).
+  if (LrbBrowserContext* context = browser_context()) {
+    base::ThreadPool::PostTask(
+        FROM_HERE,
+        {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+        base::BindOnce(
+            [](base::FilePath file) {
+              if (!ContentBlocker::WriteDisabledSites(file)) {
+                LOG(WARNING) << "lrb: can't write " << file;
+              }
+            },
+            context->GetPath().Append(kBlockingOffSitesFile)));
+  }
+  // The renderers that show the site's frames were started with the old
+  // list, and site isolation keeps the site's frames in them: they end, so
+  // the reloads below start new ones with the new list. Pages of other
+  // sites with one of its frames reload too (the frame went with them).
+  std::set<content::RenderProcessHost*> processes;
+  for (Shell* window : Shell::windows()) {
+    window->web_contents()->ForEachRenderFrameHost(
+        [&](content::RenderFrameHost* frame) {
+          if (SiteForUrl(frame->GetLastCommittedOrigin().GetURL()) == site) {
+            processes.insert(frame->GetProcess());
+          }
+        });
+  }
+  std::vector<Shell*> reload;
+  for (Shell* window : Shell::windows()) {
+    bool affected =
+        SiteForUrl(window->web_contents()->GetLastCommittedURL()) == site;
+    window->web_contents()->ForEachRenderFrameHost(
+        [&](content::RenderFrameHost* frame) {
+          affected |= processes.contains(frame->GetProcess());
+        });
+    if (affected) {
+      reload.push_back(window);
+    }
+  }
+  for (content::RenderProcessHost* process : processes) {
+    process->FastShutdownIfPossible(/*page_count=*/0,
+                                    /*skip_unload_handlers=*/true);
+  }
+  // A spare renderer, started ahead for the next new process, has the old
+  // list too.
+  std::vector<content::RenderProcessHost*> spares;
+  for (content::RenderProcessHost* spare :
+       content::SpareRenderProcessHostManager::Get().GetSpares()) {
+    spares.push_back(spare);
+  }
+  for (content::RenderProcessHost* spare : spares) {
+    spare->FastShutdownIfPossible(/*page_count=*/0,
+                                  /*skip_unload_handlers=*/true);
+  }
+  for (Shell* window : reload) {
+    window->web_contents()->GetController().Reload(
+        content::ReloadType::BYPASSING_CACHE, /*check_for_repost=*/false);
   }
 }
 
@@ -195,11 +303,28 @@ void LrbContentBrowserClient::ReportActive() {
   }
 }
 
-void LrbContentBrowserClient::DiscardPages() {
+void LrbContentBrowserClient::DiscardPages(bool critical) {
   for (Shell* window : Shell::windows()) {
+    // A page that would ask before leaving may hold what the user typed;
+    // only critical pressure drops it.
+    if (!critical && HasUnsavedInput(window->web_contents())) {
+      continue;
+    }
     ActivityTracker::CreateForWebContents(window->web_contents(), *this);
     ActivityTracker::FromWebContents(window->web_contents())->Discard();
   }
+}
+
+// static
+bool LrbContentBrowserClient::HasUnsavedInput(content::WebContents* contents) {
+  bool typed = false;
+  contents->ForEachRenderFrameHost([&](content::RenderFrameHost* frame) {
+    const base::WeakPtr<performance_manager::FrameNode> node =
+        performance_manager::PerformanceManager::GetFrameNodeForRenderFrameHost(
+            frame);
+    typed = typed || (node && node->HadFormInteraction());
+  });
+  return typed;
 }
 
 void LrbContentBrowserClient::OnPageDiscarded() {
@@ -263,14 +388,52 @@ void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
   if (OnKeyringLine(line)) {
     return;  // saved passwords and autofill (keyring.h)
   }
-  if (line == "discard") {
-    DiscardPages();
+  // "<command> [<argument>]"
+  const size_t space = line.find(' ');
+  const std::string_view command = std::string_view(line).substr(0, space);
+  const std::string_view argument =
+      space == std::string::npos ? std::string_view()
+                                 : std::string_view(line).substr(space + 1);
+  if (command == "discard") {
+    // Bare "discard": critical (what older coordinators sent).
+    DiscardPages(argument != "moderate");
     return;
   }
-  if (line == "discard-background") {
+  if (command == "discard-background") {
     // The instance in use, under pressure: its tabs not shown sleep.
     VLOG(1) << "lrb: sleeping background tabs of " << site_;
-    LrbPlatformDelegate::DiscardBackgroundTabs();
+    LrbPlatformDelegate::DiscardBackgroundTabs(argument != "moderate");
+    return;
+  }
+  if (command == "hide") {
+    // The other site's window is on screen: the one that left for it hides.
+    // Its pages stay; Back from there shows it again.
+    uint64_t handoff = 0;
+    if (!base::StringToUint64(argument, &handoff)) {
+      return;
+    }
+    auto it = handoffs_.find(handoff);
+    if (it == handoffs_.end()) {
+      return;
+    }
+    base::WeakPtr<content::WebContents> left = it->second;
+    handoffs_.erase(it);
+    if (left) {
+      LrbPlatformDelegate::HideWindowOf(left.get());
+    }
+    return;
+  }
+  if (command == "adblock-file") {
+    // The lists were just built; this instance started without them. Once
+    // loaded, requests are checked (WillCreateURLLoaderFactory sees it for
+    // factories created from then on). An engine already loaded stays: it
+    // is never freed, and the next start maps the new file.
+    if (!argument.empty() && !ContentBlocker::loaded()) {
+      base::ThreadPool::PostTask(
+          FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+          base::BindOnce(base::IgnoreResult(&ContentBlocker::Load),
+                         base::FilePath(argument)));
+    }
     return;
   }
   if (line == "close") {
@@ -283,14 +446,16 @@ void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
                                base::Unretained(this)));
     return;
   }
-  static constexpr char kShow[] = "show ";
-  if (!line.starts_with(kShow)) {
-    return;
+  if (command == "show") {
+    Show(argument);
   }
-  // <url> [bounds=<x,y,w,h>] [back=<url>]
-  std::string_view args = std::string_view(line).substr(sizeof(kShow) - 1);
+}
+
+void LrbContentBrowserClient::Show(std::string_view args) {
+  // <url> [bounds=<x,y,w,h>] [back=<url>] [handoff=<n>]
   std::optional<coordinator::WindowBounds> bounds;
   GURL back;
+  uint64_t handoff = 0;
   const size_t space = args.find(' ');
   for (std::string_view rest =
            space == std::string_view::npos ? "" : args.substr(space + 1);
@@ -301,22 +466,41 @@ void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
       bounds = coordinator::ParseBounds(option.substr(7));
     } else if (option.starts_with("back=")) {
       back = GURL(option.substr(5));
+    } else if (option.starts_with("handoff=")) {
+      if (!base::StringToUint64(option.substr(8), &handoff)) {
+        handoff = 0;
+      }
     }
     rest = end < rest.size() ? rest.substr(end + 1) : "";
   }
-  args = args.substr(0, space);
-  const GURL url(args);
-  // The coordinator checks this too; a window never shows another site.
-  if (!url.is_valid() || site_.empty() || SiteForUrl(url) != site_) {
+  const GURL url(args.substr(0, space));
+  // Lean mode: the coordinator checks this too; a window never shows
+  // another site. Standard mode shows every site.
+  if (!url.is_valid() ||
+      (!standard_ && (site_.empty() || SiteForUrl(url) != site_))) {
     LOG(WARNING) << "lrb: refusing to show " << url << " in " << site_
                  << "'s window";
     return;
   }
+  std::optional<gfx::Rect> place;
+  if (bounds) {
+    place = gfx::Rect(bounds->x, bounds->y, bounds->width, bounds->height);
+  }
+  // A tab already showing the page (Back to a parked window, the site
+  // opened again): to the front, nothing new opens.
+  if (LrbPlatformDelegate::ShowExisting(url, place)) {
+    if (handoff) {
+      SendToCoordinator("shown " + base::NumberToString(handoff));
+    }
+    return;
+  }
+  if (handoff) {
+    ReportShownOnNextWindow(handoff);
+  }
   // Another page of this site: its own window, like a tab. With bounds, it
   // replaces another site's window: in its place.
-  if (bounds) {
-    LrbPlatformDelegate::SetNextWindowBounds(
-        gfx::Rect(bounds->x, bounds->y, bounds->width, bounds->height));
+  if (place) {
+    LrbPlatformDelegate::SetNextWindowBounds(*place);
   }
   LrbPlatformDelegate::SetNextWindowBackUrl(back);
   Shell::CreateNewWindow(browser_context(), url, nullptr, gfx::Size());
@@ -369,12 +553,18 @@ bool LrbContentBrowserClient::CanCreateWindow(
     bool opener_suppressed,
     bool* no_javascript_access) {
   *no_javascript_access = false;
+  // Every disposition here opens a window or a tab. Without a gesture it's
+  // a page opening windows on its own: ads, pop-unders.
+  if (!user_gesture) {
+    VLOG(1) << "lrb: blocked a window nobody asked for: " << target_url;
+    return false;
+  }
   if (disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB ||
-      !user_gesture || !target_url.SchemeIsHTTPOrHTTPS() || !opener) {
+      !target_url.SchemeIsHTTPOrHTTPS() || !opener) {
     return true;
   }
   const std::string target = SiteForUrl(target_url);
-  if (target != site_) {
+  if (!standard_ && target != site_) {
     OpenSiteWindow(target, target_url);  // another site: its own window
     return false;
   }
@@ -552,6 +742,42 @@ void LrbContentBrowserClient::ExposeInterfacesToRenderer(
       registry, render_process_host);
 }
 
+void LrbContentBrowserClient::AppendExtraCommandLineSwitches(
+    base::CommandLine* command_line,
+    int child_process_id) {
+  const base::CommandLine& browser = *base::CommandLine::ForCurrentProcess();
+  // Every child applies the same defaults as the browser
+  // (lrb_main_delegate.cc): a standard-mode zygote must not take lean
+  // mode's --no-sandbox.
+  if (browser.HasSwitch(switches::kMode)) {
+    command_line->AppendSwitchASCII(switches::kMode,
+                                    browser.GetSwitchValueASCII(switches::kMode));
+  }
+  // Renderers run the cosmetic rules and scriptlets. The sandboxed zygote
+  // loads the engine before its sandbox starts, and the renderers it forks
+  // share it; the unsandboxed zygote forks no renderers.
+  const std::string type =
+      command_line->GetSwitchValueASCII(::switches::kProcessType);
+  const bool renderers =
+      type == ::switches::kRendererProcess ||
+      (type == ::switches::kZygoteProcess &&
+       !command_line->HasSwitch(sandbox::policy::switches::kNoZygoteSandbox));
+  if (!renderers) {
+    return;
+  }
+  if (browser.HasSwitch(switches::kAdblockFile)) {
+    command_line->AppendSwitchPath(
+        switches::kAdblockFile, browser.GetSwitchValuePath(switches::kAdblockFile));
+  }
+  if (standard_) {
+    const std::vector<std::string> off = ContentBlocker::DisabledSites();
+    if (!off.empty()) {
+      command_line->AppendSwitchASCII(switches::kBlockingOffSites,
+                                      base::JoinString(off, ","));
+    }
+  }
+}
+
 void LrbContentBrowserClient::ExposeInterfacesToChild(
     mojo::BinderMapWithContext<content::BrowserChildProcessHost*>* map) {
   PerformanceManager().GetBinders().ExposeInterfacesToBrowserChildProcess(map);
@@ -643,14 +869,18 @@ void LrbContentBrowserClient::ConfigureNetworkContextParams(
       network::mojom::NetworkContextFilePaths::New();
   network_context_params->file_paths->data_directory = context->GetPath();
   // Cookies: in memory, every site was signed out at each start. Session
-  // cookies still end with the process, as in Chrome without session
-  // restore. Unencrypted: Chromium 155 has no fallback without a key
+  // cookies too are kept and restored at every start, as Chrome does with
+  // "continue where you left off": a lean instance the coordinator closed,
+  // that crashed, or that Back started again comes back signed in.
+  // Unencrypted: Chromium 155 has no fallback without a key
   // provider (NOTREACHED), and on Linux without a keyring Chrome's key is a
   // fixed, public one anyway. The profile is the user's alone (0700) and
   // other sites' confined processes can't reach it.
   network_context_params->file_paths->cookie_database_name =
       base::FilePath(FILE_PATH_LITERAL("Cookies"));
   network_context_params->enable_encrypted_cookies = false;
+  network_context_params->persist_session_cookies = true;
+  network_context_params->restore_old_session_cookies = true;
   // The HTTP cache: in memory it held up to 2% of RAM per site (50 MB from
   // 2.5 GB up), anonymous memory the kernel can't drop, and started empty
   // each time. 32 MB holds a site's scripts, styles and images; small, for

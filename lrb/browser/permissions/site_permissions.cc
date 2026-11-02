@@ -13,6 +13,8 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/task/thread_pool.h"
+#include "lrb/browser/site.h"
+#include "url/gurl.h"
 
 namespace lrb {
 
@@ -108,6 +110,22 @@ void SitePermissions::Forget(const url::Origin& origin,
   }
   if (site->empty()) {
     answers_.Remove(origin.Serialize());
+  }
+  Save();
+}
+
+void SitePermissions::ForgetSite(const std::string& site) {
+  std::vector<std::string> origins;
+  for (const auto [origin, answers] : answers_) {
+    if (SiteForUrl(GURL(origin)) == site) {
+      origins.push_back(origin);
+    }
+  }
+  if (origins.empty()) {
+    return;
+  }
+  for (const std::string& origin : origins) {
+    answers_.Remove(origin);
   }
   Save();
 }

@@ -12,7 +12,39 @@ memory, so the browser must react to pressure as it happens, not only fit a
 fixed budget. Targets: 2 GB x86-64 laptops (primary) and a 1 GB Raspberry Pi
 (arm64).
 
-## How it works
+## Modes
+
+lrb runs in one of two modes; `lrb_coordinator` picks one each time it
+starts, from the machine's memory (the setting `mode` can force either):
+
+- **Lean**: everything below. One single-process instance per site, its own
+  profile, the whole instance confined (Landlock, seccomp, no_new_privs).
+  Chosen when memory is tight: less than 3 GB of RAM, or less than 1.5 GB
+  available at start, or no working sandbox for standard mode.
+- **Standard**: Chromium's usual process model: zygotes, sandboxed
+  renderers locked to their site (site isolation), one browser process for
+  every site with one shared profile (`$XDG_DATA_HOME/lrb/standard`), so a
+  sign-in at Google or Microsoft serves every site, as in Chrome. The
+  bar, tabs (across sites in one window), content blocking, the permission
+  model, the file picker, the keyring and the slim defaults that don't
+  touch isolation (in-process GPU, network and audio, software compositing,
+  no prerendering, the autoplay policy) stay. Dropped: the single process,
+  low-end-device mode, V8's size bias and the back-forward cache disable.
+  The coordinator still confines the browser process with Landlock (its
+  seccomp filter lets Chromium's sandbox create namespaces) and still
+  serves lists, bookmarks, the file picker and the keyring.
+
+Why two: the one-process-per-site model is what makes 1 GB and 2 GB
+machines usable, but it costs the shared sign-in, and a desktop with
+gigabytes to spare gains nothing from it. The security target in both is
+today's standard, Chrome's. In standard mode it is Chrome's model exactly;
+in lean mode the table below says where it is stronger and weaker.
+
+Memory: standard mode costs about what Chrome's model costs for the same
+pages (MEASUREMENTS.md, "Site per window against Chrome's model": five
+sites 1083 MB against 741 MB lean, unreclaimable), minus the Chrome layer.
+
+## How it works (lean mode)
 
 1. **`//content`, not `//chrome`.** The Chrome product layer (sync,
    extensions, Safe Browsing, profile services) costs about 70 MB of
@@ -30,24 +62,36 @@ fixed budget. Targets: 2 GB x86-64 laptops (primary) and a 1 GB Raspberry Pi
    and the site opened from elsewhere. Popups that need their opener
    (sign-in, payment) stay small separate windows. A tab opened in the
    background loads only when first shown.
-5. **Leaving a site replaces the window.** Typing another site's address,
-   or a plain link click to another site, hands the window to that site and
-   the old instance exits if it was the last. Links asking for a new tab
-   open the other site's window and keep this one. Redirects within a flow
-   (OAuth, 3-D Secure, checkout) may pass through other sites in the
-   current window: they run in that window's process and profile, so they
-   can't reach any other site's data. Back from a replaced window's first
-   page returns to the site it left, restored with its history.
-6. **Memory pressure.** Background tabs, then background windows, are
-   discarded in place under pressure (window and history kept, reloaded
-   when shown). Only as a last resort, still critical with every background
-   window discarded, do the oldest windows close; opening the site again
-   restores them with their history. Chromium has no memory pressure
-   source on Linux; `patches/0001` adds one.
+5. **Leaving a site swaps the window and parks the instance.** Typing
+   another site's address, or a plain link click to another site, opens
+   that site's window where this one is; once it has painted, this window
+   hides and its instance stays alive, parked, with its pages, logins and
+   state (at most three parked; they are the first to sleep or close under
+   pressure, and closing saves their windows). Back from the new window's
+   first page shows the parked window again at once. Leaving from a tab of
+   several keeps the tab and opens the other site beside it. Links asking
+   for a new tab open the other site's window and keep this one. Redirects
+   within a flow (OAuth, 3-D Secure, checkout) may pass through other
+   sites in the current window: they run in that window's process and
+   profile, so they can't reach any other site's data. Session cookies are
+   kept and restored for every instance, so a site that closed comes back
+   signed in.
+6. **Memory pressure.** Parked instances, then background windows, then
+   background tabs are discarded in place under pressure (window and
+   history kept, reloaded when shown; pages with unsaved changes are
+   spared until pressure is critical). Pressure means less than 30% or
+   512 MB available, whichever is less (critical: 15% or 256 MB), so a
+   desktop with gigabytes free is never under pressure. Only as a last
+   resort, still critical with every background window discarded, do the
+   oldest windows close; opening the site again restores them with their
+   history. Chromium has no memory pressure source on Linux;
+   `patches/0001` adds one, `patches/0004` the absolute caps.
 7. **A coordinator** (`lrb_coordinator`): a tiny separate process that never
-   loads web content. It maps sites to instances, launches them, and
-   discards or closes them under pressure. A hijacked page can't steer
-   which windows open, which profiles they get, or what is discarded.
+   loads web content. It picks the mode, maps sites to instances, launches
+   them (asking `lrb --lrb-site-of` for a URL's site, so no throwaway
+   browser starts), restores the sites that were open at the last exit,
+   and discards or closes instances under pressure. A hijacked page can't
+   steer which windows open, which profiles they get, or what is discarded.
 8. **Content blocking** uses Brave's adblock-rust (uBlock Origin-compatible
    lists: surrogates, cosmetic rules, scriptlets), so blocking stays as
    invisible to sites as the community lists keep it. The compiled engine
@@ -67,15 +111,14 @@ fixed budget. Targets: 2 GB x86-64 laptops (primary) and a 1 GB Raspberry Pi
    or more pages. Not HTML: 6.5 MB against about 2 MB per window.
 10. **Permissions:** none without the user saying yes. Camera, microphone
     and clipboard reading are asked about in the window, remembered per
-    site and revocable from the menu; everything else is refused.
-    Downloads ask where to save.
+    site and revocable from the menu; everything else is refused. Popups
+    need a user gesture. Downloads ask where to save (a setting turns
+    that off).
 11. **Search:** DuckDuckGo's HTML page by default, changeable in the
     settings.
-12. **GPU:** the user chooses. On first start, on a machine with a GPU,
-    lrb shows the memory trade-off (7-55 MB more per window on a
-    Raspberry Pi 3, about 12 MB on a desktop with NVIDIA) and asks,
-    suggesting neither: smoothness hasn't been measured yet. Changeable in
-    Settings. Unanswered (or without a display), software rendering.
+12. **GPU:** software rendering by default (measured 7-55 MB less per
+    window on a Raspberry Pi 3, about 12 MB on a desktop with NVIDIA;
+    smoothness hasn't been measured). The GPU is a setting.
 13. **Chromium release line:** Stable (what Linux distributions ship),
     rebuilt, tested and compared for memory against the previous release
     for each security release; never main or canary. Chromium's Extended
@@ -87,7 +130,10 @@ fixed budget. Targets: 2 GB x86-64 laptops (primary) and a 1 GB Raspberry Pi
 
 ## Security model
 
-| Threat | Chrome | lrb |
+Standard mode is Chrome's model (sandboxed, site-locked renderers; the
+browser process trusted) under Landlock. The table is lean mode.
+
+| Threat | Chrome | lrb (lean mode) |
 |---|---|---|
 | A site reading another site's data (cookies, storage) | Blocked: data in a privileged process, renderers locked to their site | Blocked: other sites' data is in other processes and profiles |
 | A hijacked page reaching your files and system | Per-renderer sandbox | Whole-instance OS confinement (Landlock, seccomp, no_new_privs; `lrb/coordinator/confine.h`) and the V8 sandbox. The user's files reach it only through the coordinator's file picker (`broker.h`) |

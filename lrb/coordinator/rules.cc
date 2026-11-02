@@ -182,6 +182,42 @@ std::string FormatBounds(const WindowBounds& bounds) {
          std::to_string(bounds.width) + "," + std::to_string(bounds.height);
 }
 
+std::optional<bool> JsonBool(std::string_view json, std::string_view key) {
+  const std::string quoted = "\"" + std::string(key) + "\"";
+  size_t i = json.find(quoted);
+  if (i == std::string_view::npos) {
+    return std::nullopt;
+  }
+  i += quoted.size();
+  auto skip_space = [&] {
+    while (i < json.size() && (json[i] == ' ' || json[i] == '\t' ||
+                               json[i] == '\n' || json[i] == '\r')) {
+      ++i;
+    }
+  };
+  skip_space();
+  if (i >= json.size() || json[i] != ':') {
+    return std::nullopt;
+  }
+  ++i;
+  skip_space();
+  const std::string_view rest = json.substr(i);
+  // The literal must end there: "trueish" or "falsey" isn't one.
+  auto literal = [&rest](std::string_view word) {
+    return rest.starts_with(word) &&
+           (rest.size() == word.size() ||
+            std::string_view(" \t\r\n,}").find(rest[word.size()]) !=
+                std::string_view::npos);
+  };
+  if (literal("true")) {
+    return true;
+  }
+  if (literal("false")) {
+    return false;
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string> JsonString(std::string_view json,
                                       std::string_view key) {
   const std::string quoted = "\"" + std::string(key) + "\"";

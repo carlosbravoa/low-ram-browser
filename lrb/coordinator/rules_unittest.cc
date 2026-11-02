@@ -120,4 +120,18 @@ TEST(CoordinatorRules, JsonString) {
   EXPECT_FALSE(JsonString("{\"a\":\"x\ny\"}", "a"));    // raw control
 }
 
+TEST(CoordinatorRules, JsonBool) {
+  const std::string json =
+      R"({"gpu":false, "ask_downloads" : true,"show_memory":false})"
+      R"(,"startup":"page","x":truex,"n":1})";
+  EXPECT_EQ(false, JsonBool(json, "gpu"));
+  EXPECT_EQ(true, JsonBool(json, "ask_downloads"));
+  EXPECT_EQ(false, JsonBool(json, "show_memory"));
+  EXPECT_FALSE(JsonBool(json, "startup").has_value());  // a string
+  EXPECT_FALSE(JsonBool(json, "x").has_value());        // not a literal
+  EXPECT_FALSE(JsonBool(json, "n").has_value());        // a number
+  EXPECT_FALSE(JsonBool(json, "missing").has_value());
+  EXPECT_EQ(true, JsonBool(R"({"a":true})", "a"));      // last in the object
+}
+
 }  // namespace lrb::coordinator

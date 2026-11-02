@@ -6,14 +6,20 @@
 
 #include <atomic>
 #include <memory>
+#include <set>
 #include <tuple>
 
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/numerics/byte_conversions.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
+#include "base/synchronization/lock.h"
 #include "lrb/adblock/lib.rs.h"
+#include "lrb/browser/site.h"
 #include "url/gurl.h"
 
 namespace lrb {
@@ -22,10 +28,58 @@ namespace {
 
 constexpr char kMagic[8] = {'L', 'R', 'B', 'A', 'D', 'B', '0', '1'};
 
-// Set once at startup, then only read; never freed (the engine reads its
+// Set at startup, or later when the lists were just built; never freed (the engine reads its
 // rules from the mapping for the life of the process).
 std::atomic<const adblock::Engine*> g_engine{nullptr};
 std::atomic<bool> g_enabled{true};
+
+// Standard mode: the sites blocking is off for. Read on every request from
+// the network's thread, changed on the UI thread. Most of the time empty:
+// the flag spares requests the lock and the site lookup.
+std::atomic<bool> g_any_disabled{false};
+
+base::Lock& DisabledLock() {
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
+}
+
+std::set<std::string>& DisabledSet() {
+  static base::NoDestructor<std::set<std::string>> sites;
+  return *sites;
+}
+
+// With DisabledLock() held.
+void ReplaceDisabled(std::set<std::string> sites) {
+  g_any_disabled.store(!sites.empty(), std::memory_order_release);
+  DisabledSet() = std::move(sites);
+}
+
+// Sites as the coordinator and SiteForUrl write them: lowercase letters,
+// digits, '-', '.', and ':' or '[' ']' for IP addresses. Anything else in
+// a list is skipped.
+bool PlausibleSite(std::string_view site) {
+  if (site.empty() || site.size() > 253) {
+    return false;
+  }
+  for (char c : site) {
+    if (!(base::IsAsciiLower(c) || base::IsAsciiDigit(c) || c == '-' ||
+          c == '.' || c == ':' || c == '[' || c == ']')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::set<std::string> ParseSites(std::string_view text, const char* separators) {
+  std::set<std::string> sites;
+  for (std::string_view site : base::SplitStringPiece(
+           text, separators, base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    if (PlausibleSite(site)) {
+      sites.emplace(site);
+    }
+  }
+  return sites;
+}
 
 const char* RequestType(network::mojom::RequestDestination destination) {
   using D = network::mojom::RequestDestination;
@@ -138,9 +192,79 @@ bool ContentBlocker::enabled() {
 }
 
 // static
+bool ContentBlocker::EnabledFor(const GURL& page_url) {
+  if (!enabled()) {
+    return false;
+  }
+  if (!g_any_disabled.load(std::memory_order_acquire)) {
+    return true;
+  }
+  const std::string site = SiteForUrl(page_url);
+  if (site.empty()) {
+    return true;
+  }
+  base::AutoLock lock(DisabledLock());
+  return !DisabledSet().contains(site);
+}
+
+// static
+void ContentBlocker::SetSiteEnabled(const std::string& site, bool enabled) {
+  if (!PlausibleSite(site)) {
+    return;
+  }
+  base::AutoLock lock(DisabledLock());
+  std::set<std::string> sites = DisabledSet();
+  if (enabled) {
+    sites.erase(site);
+  } else {
+    sites.insert(site);
+  }
+  ReplaceDisabled(std::move(sites));
+}
+
+// static
+std::vector<std::string> ContentBlocker::DisabledSites() {
+  base::AutoLock lock(DisabledLock());
+  return std::vector<std::string>(DisabledSet().begin(), DisabledSet().end());
+}
+
+// static
+void ContentBlocker::SetDisabledSitesFromSwitch(const std::string& value) {
+  std::set<std::string> sites = ParseSites(value, ",");
+  base::AutoLock lock(DisabledLock());
+  ReplaceDisabled(std::move(sites));
+}
+
+// static
+void ContentBlocker::ReadDisabledSites(const base::FilePath& file) {
+  std::string text;
+  if (file.empty() || !base::ReadFileToStringWithMaxSize(file, &text, 1 << 20)) {
+    return;  // none yet
+  }
+  std::set<std::string> sites = ParseSites(text, "\n");
+  base::AutoLock lock(DisabledLock());
+  ReplaceDisabled(std::move(sites));
+}
+
+// static
+bool ContentBlocker::WriteDisabledSites(const base::FilePath& file) {
+  std::string text;
+  for (const std::string& site : DisabledSites()) {
+    text += site + "\n";
+  }
+  // Next to it, then renamed: a crash never leaves half a list.
+  const base::FilePath tmp = file.AddExtension(FILE_PATH_LITERAL("tmp"));
+  if (!base::WriteFile(tmp, text) || !base::ReplaceFile(tmp, file, nullptr)) {
+    base::DeleteFile(tmp);
+    return false;
+  }
+  return true;
+}
+
+// static
 std::string ContentBlocker::CosmeticCss(const GURL& url) {
   const adblock::Engine* engine =
-      enabled() ? g_engine.load(std::memory_order_acquire) : nullptr;
+      EnabledFor(url) ? g_engine.load(std::memory_order_acquire) : nullptr;
   if (!engine || !url.SchemeIsHTTPOrHTTPS()) {
     return std::string();
   }
@@ -151,7 +275,7 @@ std::string ContentBlocker::CosmeticCss(const GURL& url) {
 // static
 std::string ContentBlocker::Scriptlets(const GURL& url) {
   const adblock::Engine* engine =
-      enabled() ? g_engine.load(std::memory_order_acquire) : nullptr;
+      EnabledFor(url) ? g_engine.load(std::memory_order_acquire) : nullptr;
   if (!engine || !url.SchemeIsHTTPOrHTTPS()) {
     return std::string();
   }
@@ -168,7 +292,7 @@ ContentBlocker::Decision ContentBlocker::Check(
     const std::string& method) {
   Decision decision;
   const adblock::Engine* engine =
-      enabled() ? g_engine.load(std::memory_order_acquire) : nullptr;
+      EnabledFor(source) ? g_engine.load(std::memory_order_acquire) : nullptr;
   if (!engine || !url.SchemeIsHTTPOrHTTPS()) {
     return decision;
   }
