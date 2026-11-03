@@ -3,3 +3,6 @@ __pycache__/
 /.profiles/
 /dist/
 /lrb/third_party/rust/vendor/
+/*.snap
+/snap-analysis.json
+/snap-validation-results.json

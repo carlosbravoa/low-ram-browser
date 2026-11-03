@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Low RAM Browser
+GenericName=Web Browser
+Comment=Browse the web with as little memory as possible
+Exec=low-ram-browser %u
+Icon=${SNAP}/meta/gui/low-ram-browser.svg
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=lrb

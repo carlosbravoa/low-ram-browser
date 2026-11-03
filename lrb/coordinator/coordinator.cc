@@ -478,6 +478,12 @@ coordinator::ConfinePolicy InstancePolicy(const Options& options,
   coordinator::ConfinePolicy policy;
   policy.read_exec = {DirName(options.browser), "/usr", "/lib", "/lib64",
                       "/lib32", "/bin", "/sbin"};
+  // As a snap, the libraries are the snap's own ($SNAP/usr/lib) and its
+  // platform snaps' ($SNAP/gnome-platform, $SNAP/gpu-2404), on
+  // LD_LIBRARY_PATH: the whole read-only squashfs.
+  if (const std::string snap = Getenv("SNAP"); !snap.empty()) {
+    policy.read_exec.push_back(snap);
+  }
   policy.read = {
       "/etc", "/proc", "/sys", "/run", "/var/lib/dbus",
       "/var/cache/fontconfig", DirName(options.adblock_file),
@@ -698,9 +704,13 @@ bool HandToRunningCoordinator(const Options& options) {
 }
 
 // The user's Downloads folder (XDG_DOWNLOAD_DIR in user-dirs.dirs), else
-// ~/Downloads.
+// ~/Downloads. As a snap, HOME is the snap's data directory and the user's
+// home is SNAP_REAL_HOME (its user-dirs.dirs is under a hidden directory
+// the snap can't read, so it is the default there).
 std::string UserDownloadsDir() {
-  const std::string home = Getenv("HOME");
+  const std::string home = Getenv("SNAP_REAL_HOME").empty()
+                               ? Getenv("HOME")
+                               : Getenv("SNAP_REAL_HOME");
   const std::string config = Getenv("XDG_CONFIG_HOME").empty()
                                  ? home + "/.config"
                                  : Getenv("XDG_CONFIG_HOME");

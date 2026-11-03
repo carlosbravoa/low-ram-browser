@@ -1,0 +1,123 @@
+name: low-ram-browser
+base: core24
+version: '0.1.0-alpha.8'
+title: Low RAM Browser
+summary: Chromium-based browser with the smallest memory footprint
+description: |
+  A Chromium-based web browser for machines where every kilobyte counts:
+  2 GB laptops, a 1 GB Raspberry Pi, or any computer whose RAM other
+  programs already hold.
+
+  It picks a mode each time it starts. Lean mode, where memory is tight:
+  one single-process browser instance per site, each confined (Landlock,
+  seccomp) to its own profile, so sites never share a process or a cookie
+  jar; leaving a site parks it and Back brings it straight back. Standard
+  mode, where there is memory to spare: Chromium's usual processes and
+  sandbox with site isolation and one shared profile, so signing in once
+  serves every site. Ad blocking with uBlock Origin's lists (Brave's
+  adblock-rust), phishing and malware warnings, saved passwords in the
+  desktop's keyring, uploads and downloads through the desktop's file
+  picker, no permission granted to any site without a yes.
+
+  The snap is the way to get standard mode on Ubuntu and its derivatives,
+  which let only programs with an AppArmor profile create the user
+  namespaces Chromium's sandbox needs: the tarball and the .deb run in
+  lean mode there. Standard mode needs the browser-sandbox connection
+  (snap connect low-ram-browser:browser-sandbox).
+license: BSD-3-Clause
+website: https://github.com/carlosbravoa/low-ram-browser
+source-code: https://github.com/carlosbravoa/low-ram-browser
+issues: https://github.com/carlosbravoa/low-ram-browser/issues
+contact: https://github.com/carlosbravoa/low-ram-browser/issues
+grade: devel
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+plugs:
+  # Chromium's own sandbox (standard mode): user namespaces, chroot.
+  # Manual connect; store auto-connection needs a request.
+  browser-sandbox:
+    interface: browser-support
+    allow-sandbox: true
+
+apps:
+  low-ram-browser:
+    command: low-ram-browser
+    extensions:
+      - gnome
+    plugs:
+      - network
+      - home
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - opengl
+      - audio-playback
+      - audio-record
+      - camera
+      - browser-sandbox
+      - gsettings
+      - screen-inhibit-control
+      - password-manager-service
+      - removable-media
+      - u2f-devices
+
+parts:
+  low-ram-browser:
+    # Nothing is compiled here: Chromium with the //lrb embedder takes hours
+    # per CPU and a 60 GB checkout (build/build.sh). The part takes the
+    # release tarball that build/package_release.sh makes and the GitHub
+    # release carries, checks its SHA-256 and unpacks it. Python's tarfile
+    # can't read zstd, so the dump plugin can't do this.
+    plugin: nil
+    build-packages:
+      - zstd
+      - curl
+      - ca-certificates
+    stage-packages:
+      - libnss3
+      - libnspr4
+      - libasound2t64
+      - libgbm1
+      - libdrm2
+      - libxkbcommon0
+      - libxres1
+      - libxcomposite1
+      - libxdamage1
+      - libxfixes3
+      - libxrandr2
+      - libxi6
+      - libatk-bridge2.0-0t64
+      - libatspi2.0-0t64
+      - libsecret-1-0
+    override-build: |
+      set -eu
+      version="0.1.0-alpha.8"
+      case "$CRAFT_ARCH_BUILD_FOR" in
+        amd64) cpu=x64;   sha=f46e470775a5e3a167280bcd0192072fdd4413a0cdd01e418bf70e2dfd8b8b25 ;;
+        arm64) cpu=arm64; sha=5194a092639b6ba62369e4194061f1fa2ce2fa8b11a015a70ade061c75905bc3 ;;
+        *) echo "no lrb build for $CRAFT_ARCH_BUILD_FOR" >&2; exit 1 ;;
+      esac
+      tarball="low-ram-browser-$version-linux-$cpu.tar.zst"
+      # The same bytes the release carries: the local copy when this is the
+      # repository that made it, the release's file otherwise.
+      local="$CRAFT_PROJECT_DIR/dist/release-$version/$tarball"
+      if [ -f "$local" ]; then
+        cp "$local" "$tarball"
+      else
+        curl -fsSL -o "$tarball" \
+          "https://github.com/carlosbravoa/low-ram-browser/releases/download/v$version/$tarball"
+      fi
+      echo "$sha  $tarball" | sha256sum -c -
+      rm -rf unpacked && mkdir unpacked
+      tar -C unpacked --zstd -xf "$tarball"
+      # The launcher execs lib/lrb_coordinator next to itself, and the
+      # coordinator finds lrb, lrb_picker and lrb_keyring beside it: keep the
+      # layout. install.sh is for the tarball, not the snap.
+      cp -a "unpacked/low-ram-browser-$version/." "$CRAFT_PART_INSTALL/"
+      rm -f "$CRAFT_PART_INSTALL/install.sh"
+      rm -f "$tarball"
