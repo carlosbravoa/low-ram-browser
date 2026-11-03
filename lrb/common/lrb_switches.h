@@ -100,6 +100,13 @@ inline constexpr char kBlockingOffSites[] = "lrb-blocking-off-sites";
 // for whoever wants them everywhere).
 inline constexpr char kDarkPages[] = "lrb-dark-pages";
 
+// Lean instances: why the coordinator chose lean mode for this start, shown
+// in About. One word: "option" (--mode or the settings asked for lean),
+// "refused" (standard was asked for, but Chromium's sandbox can't run here),
+// "memory" (less than 3 GiB of RAM), "available" (less than 1.5 GiB free at
+// start), "sandbox" (automatic, and Chromium's sandbox can't run here).
+inline constexpr char kLeanReason[] = "lrb-lean-reason";
+
 // Show only the settings window, then exit (started by the coordinator: the
 // one process allowed to write the settings).
 inline constexpr char kSettingsWindow[] = "lrb-settings";

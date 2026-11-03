@@ -25,6 +25,9 @@ class LrbContentRendererClient : public content::ContentRendererClient {
   ~LrbContentRendererClient() override;
 
   // content::ContentRendererClient:
+  // Loads the engine from the browser's descriptor when the zygote gave
+  // this renderer none (its lists were built after the zygote started).
+  void RenderThreadStarted() override;
   void SetUpWebAssemblyTrapHandler() override;
   void RenderFrameCreated(content::RenderFrame* render_frame) override;
   void PrepareErrorPage(content::RenderFrame* render_frame,

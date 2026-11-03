@@ -14,8 +14,11 @@
 #include <string_view>
 #include <vector>
 
+#include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "content/public/browser/content_browser_client.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
@@ -155,6 +158,10 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   void OverrideWebPreferences(content::WebContents* web_contents,
                               content::SiteInstance& main_frame_site,
                               blink::web_pref::WebPreferences* prefs) override;
+  bool OverrideWebPreferencesAfterNavigation(
+      content::WebContents* web_contents,
+      content::SiteInstance& main_frame_site,
+      blink::web_pref::WebPreferences* prefs) override;
   std::unique_ptr<content::DevToolsManagerDelegate>
   CreateDevToolsManagerDelegate() override;
   void ExposeInterfacesToRenderer(
@@ -165,6 +172,13 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   // mode) the sites blocking is off for; every other child the mode.
   void AppendExtraCommandLineSwitches(base::CommandLine* command_line,
                                       int child_process_id) override;
+  // Renderers also get the engine file and its resources as descriptors
+  // (lrb/common/lrb_descriptors.h): those forked by a zygote started before the
+  // lists were built have no engine otherwise. Runs on the launcher thread.
+  void GetAdditionalMappedFilesForChildProcess(
+      const base::CommandLine& command_line,
+      int child_process_id,
+      content::PosixFileDescriptorInfo* mappings) override;
   void ExposeInterfacesToChild(
       mojo::BinderMapWithContext<content::BrowserChildProcessHost*>* map)
       override;
@@ -292,6 +306,11 @@ class LrbContentBrowserClient : public content::ContentBrowserClient {
   raw_ptr<LrbBrowserMainParts> main_parts_ = nullptr;
   const bool standard_;
   std::string site_;
+  // The engine file: --lrb-adblock-file at start, or the coordinator's
+  // "adblock-file" line once the lists are built. Empty until then. Set on
+  // the UI thread, read on the launcher thread.
+  base::Lock engine_path_lock_;
+  base::FilePath engine_path_ GUARDED_BY(engine_path_lock_);
   uint64_t last_handoff_ = 0;
   // Windows left for another site, until the coordinator says to hide them.
   std::map<uint64_t, base::WeakPtr<content::WebContents>> handoffs_;

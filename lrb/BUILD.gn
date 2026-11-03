@@ -127,6 +127,7 @@ executable("lrb") {
     "common/content_blocker.h",
     "common/lrb_content_client.cc",
     "common/lrb_content_client.h",
+    "common/lrb_descriptors.h",
     "common/lrb_switches.h",
     "common/mode.cc",
     "common/mode.h",

@@ -112,6 +112,7 @@
 //                                                 standard instance)
 //
 // Launch switches it adds: --lrb-site (lean), --lrb-mode=standard,
+// --lrb-lean-reason=<word> (lean: why, for About),
 // --lrb-handoff=<token> (the window replaces another site's),
 // --lrb-latest-release=<version>, --lrb-resume, --lrb-adblock-file, ...
 //
@@ -826,6 +827,7 @@ class Coordinator {
       source = "the settings";
     }
     if (chosen == "lean") {
+      lean_reason_ = "option";
       if (options_.verbose) {
         Log("lean mode (%s)", source.c_str());
       }
@@ -836,6 +838,7 @@ class Coordinator {
         standard_ = true;
         Log("standard mode (%s)", source.c_str());
       } else {
+        lean_reason_ = "refused";
         Log("standard mode refused (%s asked for it): Chromium's sandbox "
             "can't create a user namespace here (AppArmor on Ubuntu 23.10+: "
             "docs/building.md); lean mode",
@@ -848,10 +851,13 @@ class Coordinator {
     const double total = MeminfoBytes(meminfo, "MemTotal") / kGiB;
     const double available = MeminfoBytes(meminfo, "MemAvailable") / kGiB;
     if (total < 3) {
+      lean_reason_ = "memory";
       Log("lean mode: %.1f GiB of RAM (standard needs 3)", total);
     } else if (available < 1.5) {
+      lean_reason_ = "available";
       Log("lean mode: %.1f GiB free at start (standard needs 1.5)", available);
     } else if (!SandboxCheck()) {
+      lean_reason_ = "sandbox";
       Log("lean mode: Chromium's sandbox can't create a user namespace here "
           "(AppArmor on Ubuntu 23.10+: docs/building.md)");
     } else {
@@ -1517,6 +1523,9 @@ class Coordinator {
     }
     if (!latest_release_.empty()) {
       args.push_back("--lrb-latest-release=" + latest_release_);
+    }
+    if (!standard_ && !lean_reason_.empty()) {
+      args.push_back("--lrb-lean-reason=" + lean_reason_);
     }
     for (const std::string& arg : options_.browser_args) {
       args.push_back(arg);
@@ -2214,6 +2223,9 @@ class Coordinator {
   // Standard mode (DecideMode): one instance for every site, on this
   // profile, beside the sites' directory.
   bool standard_ = false;
+  // Lean mode: why (DecideMode), passed to lean instances for About
+  // (--lrb-lean-reason).
+  std::string lean_reason_;
   const std::string standard_profile_;
   pid_t standard_pid_ = 0;  // while it runs
   // Addresses for the standard instance before it connected.

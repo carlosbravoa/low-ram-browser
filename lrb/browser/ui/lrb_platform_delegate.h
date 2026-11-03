@@ -213,6 +213,11 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   // A discarded tab's empty title is ignored: a sleeping window keeps its
   // title in the taskbar.
   void SetTitle(Shell* shell, const std::u16string& title);
+  // The page's document has started (its <html> element exists): a window
+  // waiting for it is shown. A window not on screen gets no frames, so the
+  // paint below never comes while it waits (measured on X11 and Wayland);
+  // the document is the earliest moment the page can paint once shown.
+  void PrimaryMainDocumentElementAvailable(Shell* shell);
   // The page painted something: a window waiting for it is shown.
   void DidFirstVisuallyNonEmptyPaint(Shell* shell);
   // Whether it destroys `shell` itself (true) or Shell deletes itself.

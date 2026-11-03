@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 
@@ -44,6 +45,11 @@ class ContentBlocker {
   // coordinator has just built the lists (requests after it are checked).
   // Until then, and if it fails, nothing is blocked.
   static bool Load(const base::FilePath& path);
+
+  // The same from an open read-only engine file and, if valid, its
+  // resources file (the surrogates and the scriptlets): renderers get both
+  // as descriptors from the browser. Blocking.
+  static bool Load(base::File file, base::File resources);
 
   // Whether a request from a page at `source` should be blocked.
   static Decision Check(const GURL& url,

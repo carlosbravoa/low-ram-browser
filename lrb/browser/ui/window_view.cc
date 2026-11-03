@@ -1912,7 +1912,8 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
       break;
     case kDarkPages:
       SetDarkPages(shell_->web_contents()->GetBrowserContext(),
-                   !DarkPagesOn());
+                   shell_->web_contents()->GetLastCommittedURL(),
+                   !DarkPagesOn(shell_->web_contents()->GetLastCommittedURL()));
       break;
     case kClosePage:
       CloseSoon();
@@ -1928,7 +1929,8 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
 }
 
 bool WindowView::IsCommandIdChecked(int command_id) const {
-  return command_id == kDarkPages && DarkPagesOn();
+  return command_id == kDarkPages &&
+         DarkPagesOn(shell_->web_contents()->GetLastCommittedURL());
 }
 
 bool WindowView::IsCommandIdEnabled(int command_id) const {

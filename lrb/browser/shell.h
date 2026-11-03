@@ -160,6 +160,7 @@ class Shell : public content::WebContentsDelegate,
   // content::WebContentsObserver:
   void TitleWasSet(content::NavigationEntry* entry) override;
   // A window waiting for its page (a hand-off) goes on screen.
+  void PrimaryMainDocumentElementAvailable() override;
   void DidFirstVisuallyNonEmptyPaint() override;
 
   std::unique_ptr<content::JavaScriptDialogManager> dialog_manager_;

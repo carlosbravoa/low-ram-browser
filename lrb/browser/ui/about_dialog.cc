@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/base_paths.h"
+#include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -20,6 +21,7 @@
 #include "components/version_info/version_info.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "lrb/browser/site.h"
+#include "lrb/common/lrb_switches.h"
 #include "lrb/common/mode.h"
 #include "lrb/common/version.h"
 #include "net/base/filename_util.h"
@@ -84,6 +86,10 @@ class AboutView : public views::View {
              ? u"Running in standard mode: Chromium's sandbox and site "
                u"isolation"
              : u"Running in lean mode: one confined process per site");
+    if (!StandardMode()) {
+      LeanReason(base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kLeanReason));
+    }
     Note(u"Chromium's security fixes reach lrb with its releases. Compare "
          u"with Chromium's latest release:");
     AddLink(u"Chromium releases for Linux",
@@ -128,6 +134,21 @@ class AboutView : public views::View {
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetMultiLine(true);
     label->SetSelectable(true);
+  }
+
+  // Why lean mode, as the coordinator decided it (--lrb-lean-reason).
+  void LeanReason(const std::string& reason) {
+    if (reason == "sandbox" || reason == "refused") {
+      Note(u"Standard mode is unavailable here: this system lets only its "
+           u"own packages create user namespaces, which Chromium's sandbox "
+           u"needs. The snap package has standard mode.");
+    } else if (reason == "memory") {
+      Note(u"Standard mode needs 3 GB of RAM.");
+    } else if (reason == "available") {
+      Note(u"Standard mode needs 1.5 GB free when lrb starts.");
+    } else if (reason == "option") {
+      Note(u"Lean mode was chosen in Settings.");
+    }
   }
 
   void AddLink(const std::u16string& text,

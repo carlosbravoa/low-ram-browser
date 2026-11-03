@@ -87,9 +87,13 @@ base::OnceClosure& NextWindowShown() {
 bool g_show_memory = false;
 
 constexpr base::TimeDelta kMemoryPeriod = base::Seconds(5);
-// A hand-off's window shows this long after its page loaded if it hasn't
-// painted (a page that paints nothing, or no paint while not on screen).
-constexpr base::TimeDelta kShowAfterLoad = base::Milliseconds(1500);
+// A hand-off's window shows when its page's document starts
+// (PrimaryMainDocumentElementAvailable), or this long after the page loaded
+// without one (a download, an empty answer). Not at first paint: a window
+// not on screen produces no frames, so that signal never comes while it
+// waits (measured 2026-11-02 on X11 and Wayland: every swap took the
+// fallback, 1.5 s then).
+constexpr base::TimeDelta kShowAfterLoad = base::Milliseconds(200);
 // ...and at most this long after it opened, loaded or not: a page whose
 // server never answers must not leave the user with no window to see.
 constexpr base::TimeDelta kShowAtMost = base::Seconds(5);
@@ -938,8 +942,9 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
   // tabs; the last one's Shell destroys the window through CleanUp().
   ArmCloseButton(raw);
   if (shown) {
-    // Replacing another site's window: on screen once its page has
-    // painted (SetContents, DidFirstVisuallyNonEmptyPaint, SetIsLoading).
+    // Replacing another site's window: on screen once its page's document
+    // has started (PrimaryMainDocumentElementAvailable; also SetContents,
+    // DidFirstVisuallyNonEmptyPaint, SetIsLoading).
     raw->on_shown = std::move(shown);
     raw->shown_shell = shell;
     raw->shown_cap_timer.Start(
@@ -1347,8 +1352,8 @@ void LrbPlatformDelegate::SetIsLoading(Shell* shell, bool loading) {
     }
   }
   if (!loading && window->on_shown && window->shown_shell == shell) {
-    // Loaded without painting yet (or not painting while off screen): on
-    // screen shortly anyway.
+    // Loaded without a document (nothing to paint): on screen shortly
+    // anyway.
     window->shown_timer.Start(
         FROM_HERE, kShowAfterLoad,
         base::BindOnce(&LrbPlatformDelegate::ShowWhenPainted,
@@ -1378,6 +1383,13 @@ void LrbPlatformDelegate::SetTitle(Shell* shell,
     window->widget->widget_delegate()->SetTitle(WindowTitle(TitleOf(tab)));
   }
   UpdateTabs(window);
+}
+
+void LrbPlatformDelegate::PrimaryMainDocumentElementAvailable(Shell* shell) {
+  Window* window = WindowOf(shell);
+  if (window && window->on_shown && window->shown_shell == shell) {
+    ShowWhenPainted(window);
+  }
 }
 
 void LrbPlatformDelegate::DidFirstVisuallyNonEmptyPaint(Shell* shell) {

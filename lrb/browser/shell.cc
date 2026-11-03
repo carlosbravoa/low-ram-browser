@@ -457,6 +457,10 @@ void Shell::TitleWasSet(content::NavigationEntry* entry) {
   }
 }
 
+void Shell::PrimaryMainDocumentElementAvailable() {
+  g_platform->PrimaryMainDocumentElementAvailable(this);
+}
+
 void Shell::DidFirstVisuallyNonEmptyPaint() {
   g_platform->DidFirstVisuallyNonEmptyPaint(this);
 }

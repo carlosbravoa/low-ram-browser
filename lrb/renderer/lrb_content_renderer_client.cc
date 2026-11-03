@@ -5,11 +5,15 @@
 
 #include "lrb/renderer/lrb_content_renderer_client.h"
 
+#include <fcntl.h>
+
 #include <memory>
 
 #include "base/command_line.h"
 #include "base/debug/stack_trace.h"
+#include "base/files/file.h"
 #include "base/functional/bind.h"
+#include "base/posix/global_descriptors.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/pass_key.h"
@@ -19,6 +23,7 @@
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
 #include "lrb/common/content_blocker.h"
+#include "lrb/common/lrb_descriptors.h"
 #include "lrb/renderer/cosmetic_filter.h"
 #include "lrb/renderer/forms_agent.h"
 #include "net/base/net_errors.h"
@@ -98,6 +103,40 @@ class UrlLoaderThrottleProvider : public blink::URLLoaderThrottleProvider {
 
 LrbContentRendererClient::LrbContentRendererClient() = default;
 LrbContentRendererClient::~LrbContentRendererClient() = default;
+
+void LrbContentRendererClient::RenderThreadStarted() {
+  // Not there in lean mode (the renderer is the browser) nor when the browser
+  // had no lists yet.
+  base::GlobalDescriptors* descriptors = base::GlobalDescriptors::GetInstance();
+  const base::CommandLine& command_line =
+      *base::CommandLine::ForCurrentProcess();
+  if (command_line.GetSwitchValueASCII(::switches::kProcessType) ==
+          ::switches::kRendererProcess &&
+      command_line.HasSwitch(::switches::kNoZygote)) {
+    // Launched directly, not forked by a zygote: the launcher put our
+    // descriptors at kBaseDescriptor + key, but //content registers only its
+    // own keys. Every other descriptor was closed at launch, so an open one
+    // there is ours.
+    for (int key : {kLrbEngineDescriptor, kLrbResourcesDescriptor}) {
+      const int fd = key + base::GlobalDescriptors::kBaseDescriptor;
+      if (descriptors->MaybeGet(key) < 0 && fcntl(fd, F_GETFD) != -1) {
+        descriptors->Set(key, fd);
+      }
+    }
+  }
+  const int fd = descriptors->MaybeGet(kLrbEngineDescriptor);
+  if (fd < 0) {
+    return;
+  }
+  base::File file(fd);
+  const int resources_fd = descriptors->MaybeGet(kLrbResourcesDescriptor);
+  base::File resources =
+      resources_fd >= 0 ? base::File(resources_fd) : base::File();
+  if (!ContentBlocker::loaded()) {
+    ContentBlocker::Load(std::move(file), std::move(resources));
+  }
+  // Otherwise the zygote's engine serves, and the descriptors close here.
+}
 
 void LrbContentRendererClient::SetUpWebAssemblyTrapHandler() {
   // WebAssembly bounds checks by guard pages: V8 handles the signal, through

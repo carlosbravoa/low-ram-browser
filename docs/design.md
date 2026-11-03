@@ -71,7 +71,8 @@ sites 1083 MB against 741 MB lean, unreclaimable), minus the Chrome layer.
    background loads only when first shown.
 5. **Leaving a site swaps the window and parks the instance.** Typing
    another site's address, or a plain link click to another site, opens
-   that site's window where this one is; once it has painted, this window
+   that site's window where this one is; once its page has started (its
+   document exists, under 0.1 s for a local page), this window
    hides and its instance stays alive, parked, with its pages, logins and
    state (at most three parked; they are the first to sleep or close under
    pressure, and closing saves their windows). Back from the new window's

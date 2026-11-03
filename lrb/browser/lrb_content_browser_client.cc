@@ -16,7 +16,9 @@
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
 #include "base/feature_list.h"
+#include "base/files/file.h"
 #include "base/files/file_path.h"
+#include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/memory_pressure_listener.h"
@@ -39,6 +41,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle_registry.h"
+#include "content/public/browser/posix_file_descriptor_info.h"
 #include "content/public/browser/reload_type.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -73,6 +76,7 @@
 #include "lrb/browser/ui/login_prompt.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/common/content_blocker.h"
+#include "lrb/common/lrb_descriptors.h"
 #include "lrb/common/safety_list.h"
 #include "lrb/common/lrb_switches.h"
 #include "lrb/common/mode.h"
@@ -137,6 +141,21 @@ performance_manager::PerformanceManagerRegistry& PerformanceManager() {
   return *performance_manager::PerformanceManagerRegistry::GetInstance();
 }
 
+// Ends the spare renderers, started ahead for the next new process: they
+// were launched with what the browser knew then. The next one starts with
+// what it knows now.
+void DropSpareRenderers() {
+  std::vector<content::RenderProcessHost*> spares;
+  for (content::RenderProcessHost* spare :
+       content::SpareRenderProcessHostManager::Get().GetSpares()) {
+    spares.push_back(spare);
+  }
+  for (content::RenderProcessHost* spare : spares) {
+    spare->FastShutdownIfPossible(/*page_count=*/0,
+                                  /*skip_unload_handlers=*/true);
+  }
+}
+
 }  // namespace
 
 LrbContentBrowserClient::LrbContentBrowserClient()
@@ -145,6 +164,9 @@ LrbContentBrowserClient::LrbContentBrowserClient()
                       : base::CommandLine::ForCurrentProcess()
                             ->GetSwitchValueASCII(switches::kSite)) {
   g_client = this;
+  base::AutoLock lock(engine_path_lock_);
+  engine_path_ = base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+      switches::kAdblockFile);
 }
 
 LrbContentBrowserClient::~LrbContentBrowserClient() {
@@ -272,15 +294,7 @@ void LrbContentBrowserClient::ReloadSiteBypassingCache(
   }
   // A spare renderer, started ahead for the next new process, has the old
   // list too.
-  std::vector<content::RenderProcessHost*> spares;
-  for (content::RenderProcessHost* spare :
-       content::SpareRenderProcessHostManager::Get().GetSpares()) {
-    spares.push_back(spare);
-  }
-  for (content::RenderProcessHost* spare : spares) {
-    spare->FastShutdownIfPossible(/*page_count=*/0,
-                                  /*skip_unload_handlers=*/true);
-  }
+  DropSpareRenderers();
   for (Shell* window : reload) {
     window->web_contents()->GetController().Reload(
         content::ReloadType::BYPASSING_CACHE, /*check_for_repost=*/false);
@@ -429,10 +443,20 @@ void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
     // factories created from then on). An engine already loaded stays: it
     // is never freed, and the next start maps the new file.
     if (!argument.empty() && !ContentBlocker::loaded()) {
+      {
+        // Renderers launched from now on get it as a descriptor.
+        base::AutoLock lock(engine_path_lock_);
+        if (engine_path_.empty()) {
+          engine_path_ = base::FilePath(argument);
+        }
+      }
+      // Without it (no descriptor): the next new site's page would get it.
+      DropSpareRenderers();
       base::ThreadPool::PostTask(
           FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
-          base::BindOnce(base::IgnoreResult(&ContentBlocker::Load),
-                         base::FilePath(argument)));
+          base::BindOnce(
+              [](const base::FilePath& path) { ContentBlocker::Load(path); },
+              base::FilePath(argument)));
     }
     return;
   }
@@ -725,7 +749,17 @@ void LrbContentBrowserClient::OverrideWebPreferences(
     prefs->in_forced_colors = true;
     prefs->preferred_contrast = blink::mojom::PreferredContrast::kMore;
   }
-  ApplyDarkPages(prefs);  // the site's choice (the menu)
+  // The site's choice (the menu): per site in standard mode too. Computed
+  // before the first page commits (an empty URL: off), then kept in line
+  // with each committed page below.
+  ApplyDarkPages(prefs, web_contents->GetLastCommittedURL());
+}
+
+bool LrbContentBrowserClient::OverrideWebPreferencesAfterNavigation(
+    content::WebContents* web_contents,
+    content::SiteInstance& main_frame_site,
+    blink::web_pref::WebPreferences* prefs) {
+  return RefreshDarkPages(prefs, web_contents->GetLastCommittedURL());
 }
 
 std::unique_ptr<content::DevToolsManagerDelegate>
@@ -775,6 +809,44 @@ void LrbContentBrowserClient::AppendExtraCommandLineSwitches(
       command_line->AppendSwitchASCII(switches::kBlockingOffSites,
                                       base::JoinString(off, ","));
     }
+  }
+}
+
+void LrbContentBrowserClient::GetAdditionalMappedFilesForChildProcess(
+    const base::CommandLine& command_line,
+    int child_process_id,
+    content::PosixFileDescriptorInfo* mappings) {
+  if (command_line.GetSwitchValueASCII(::switches::kProcessType) !=
+      ::switches::kRendererProcess) {
+    return;
+  }
+  base::FilePath path;
+  {
+    base::AutoLock lock(engine_path_lock_);
+    path = engine_path_;
+  }
+  if (path.empty()) {
+    return;  // no lists yet
+  }
+  // A renderer whose zygote mapped the engine at its start ignores it
+  // (LrbContentRendererClient::RenderThreadStarted). Opened on each launch:
+  // the launcher thread may block, and the mappings own the descriptor until
+  // the child has it.
+  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
+  if (!file.IsValid()) {
+    LOG(WARNING) << "lrb: can't open " << path << " for a renderer: "
+                 << base::File::ErrorToString(file.error_details());
+    return;
+  }
+  mappings->Transfer(kLrbEngineDescriptor,
+                     base::ScopedFD(file.TakePlatformFile()));
+  // The scriptlets come with the resources file (none if the lists were
+  // built without them).
+  base::File resources(path.AddExtension(FILE_PATH_LITERAL("resources.json")),
+                       base::File::FLAG_OPEN | base::File::FLAG_READ);
+  if (resources.IsValid()) {
+    mappings->Transfer(kLrbResourcesDescriptor,
+                       base::ScopedFD(resources.TakePlatformFile()));
   }
 }
 
