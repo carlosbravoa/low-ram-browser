@@ -34,6 +34,13 @@ starts, from the machine's memory (the setting `mode` can force either):
   seccomp filter lets Chromium's sandbox create namespaces) and still
   serves lists, bookmarks, the file picker and the keyring.
 
+Where user namespaces are restricted to profiled programs (Ubuntu 23.10
+and later, and its derivatives) the tarball and the .deb stay in lean mode:
+lrb ships neither an AppArmor profile nor a setuid sandbox helper, so that
+nothing it installs reaches outside its own directory. Standard mode there
+is for the snap package, whose profile snapd generates (decided
+2026-11-02).
+
 Why two: the one-process-per-site model is what makes 1 GB and 2 GB
 machines usable, but it costs the shared sign-in, and a desktop with
 gigabytes to spare gains nothing from it. The security target in both is

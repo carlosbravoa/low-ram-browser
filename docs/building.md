@@ -94,20 +94,18 @@ fine; decide before shipping.
 
 In standard mode ([docs/design.md](design.md#modes)) lrb runs Chromium's
 own renderer sandbox, which creates user namespaces. Ubuntu 23.10 and later
-restrict unprivileged user namespaces to programs with an AppArmor
-profile, so `lrb_coordinator` checks at start (`lrb --lrb-sandbox-check`)
-and falls back to lean mode, logging why, when they are refused. To allow
-standard mode there, give the installed browser a profile that permits
-`userns`: a minimal one is
+(and derivatives such as Linux Mint and Pop!_OS) let only programs with an
+AppArmor profile use them; Chrome and Firefox work there because Ubuntu
+ships a profile for their install paths or because they are snaps, whose
+profiles snapd generates. lrb ships no profile and no setuid helper: the
+tarball and the .deb run in lean mode on those systems, which is still
+confined (Landlock, seccomp), and `lrb_coordinator` logs why
+(`lrb --lrb-sandbox-check` fails at start). Standard mode on Ubuntu will
+come with the snap package. Elsewhere (Debian, Fedora, Arch, Raspberry Pi
+OS) user namespaces are open and standard mode works from the tarball.
 
-```
-abi <abi/4.0>,
-include <tunables/global>
-profile lrb /home/*/.local/opt/low-ram-browser/lib/lrb flags=(unconfined) {
-  userns,
-}
-```
-
-saved as `/etc/apparmor.d/lrb` and loaded with
-`sudo apparmor_parser -r /etc/apparmor.d/lrb` (adjust the path to where
-lrb is installed). Lean mode never needs it.
+A build machine on Ubuntu that wants to run or test standard mode needs a
+profile allowing `userns` for the build's `lrb` binary, as Chromium's
+[apparmor-userns-restrictions.md](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)
+describes for developer builds. That is a development setup, not something
+users install.

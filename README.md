@@ -32,6 +32,12 @@ Settings can force either. The security target is today's standard
 (Chrome's): never lower, and in lean mode higher in some places and lower
 in others; see [Security](#security).
 
+On Ubuntu and its derivatives, which let only programs with an AppArmor
+profile create user namespaces, the tarball and the .deb run in lean mode
+(Chromium's sandbox cannot start there); standard mode on those systems
+will come with the snap package, whose profile snapd provides. Other
+distributions get standard mode from the tarball.
+
 ## How it saves memory
 
 - **Lean mode: one site per window, one process per window.** Each site
