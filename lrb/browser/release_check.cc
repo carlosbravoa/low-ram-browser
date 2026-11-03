@@ -26,8 +26,12 @@ namespace lrb {
 
 namespace {
 
+// The newest release first. Not `releases/latest`: that is the newest
+// release that is neither a draft nor a prerelease, and every lrb release
+// so far is a prerelease (alpha), so it answered 404.
 constexpr char kLatestReleaseUrl[] =
-    "https://api.github.com/repos/carlosbravoa/low-ram-browser/releases/latest";
+    "https://api.github.com/repos/carlosbravoa/low-ram-browser/"
+    "releases?per_page=1";
 
 // GitHub's answer is a few kB; anything much bigger isn't it.
 constexpr size_t kMaxAnswer = 256 * 1024;
@@ -108,12 +112,18 @@ void ReleaseCheck::Start() {
 // static
 std::optional<std::string> ReleaseCheck::ParseLatestRelease(
     const std::string& json) {
-  std::optional<base::DictValue> answer =
-      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  std::optional<base::Value> answer =
+      base::JSONReader::Read(json, base::JSON_PARSE_RFC);
   if (!answer) {
     return std::nullopt;
   }
-  const std::string* tag = answer->FindString("tag_name");
+  // A list of releases, newest first (or one release, as `releases/latest`
+  // and `releases/tags/<tag>` answer).
+  const base::DictValue* release = answer->GetIfDict();
+  if (const base::ListValue* list = answer->GetIfList()) {
+    release = list->empty() ? nullptr : list->front().GetIfDict();
+  }
+  const std::string* tag = release ? release->FindString("tag_name") : nullptr;
   if (!tag) {
     return std::nullopt;
   }

@@ -42,9 +42,9 @@ class ReleaseCheck {
 
   void Start();
 
-  // The version in GitHub's answer for the latest release: its tag_name
-  // without a leading "v". Nothing if the answer has none that looks like a
-  // version.
+  // The version of the first release in GitHub's answer (a list, newest
+  // first, or one release): its tag_name without a leading "v". Nothing if
+  // the answer has none that looks like a version.
   static std::optional<std::string> ParseLatestRelease(const std::string& json);
 
  private:
