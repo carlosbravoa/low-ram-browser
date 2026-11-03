@@ -22,7 +22,8 @@ bool RunningAsSnap();
 // connected automatically are connected (each enables one feature), and the
 // terminal commands that connect the others. The coordinator runs snapctl
 // and answers ("snap-plugs <id>"): an instance runs no programs. Native
-// Views, not a page. `parent`: a view of the window it belongs to.
+// Views, not a page. It opens once the coordinator answers (5 s at most),
+// built for the answer. `parent`: a view of the window it belongs to.
 void ShowSnapConnections(base::WeakPtr<views::View> parent);
 
 // A line from the coordinator: true if it was an answer to a snap-plugs

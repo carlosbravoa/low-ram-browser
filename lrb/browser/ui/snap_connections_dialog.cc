@@ -25,6 +25,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "lrb/browser/lrb_content_browser_client.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -83,9 +84,15 @@ std::map<uint64_t, Pending>& Requests() {
   return *requests;
 }
 
-// Asks the coordinator which plugs are connected. Without a coordinator
-// there is nobody to ask: answered as outside a snap.
+// How long an answer may take: without one (an older coordinator, none),
+// the window opens as outside a snap.
+constexpr base::TimeDelta kAnswerTimeout = base::Seconds(5);
+
+// Asks the coordinator which plugs are connected; `done` gets the answer,
+// or an empty one after kAnswerTimeout. Without a coordinator there is
+// nobody to ask: answered as outside a snap.
 void AskPlugs(PlugsCallback done) {
+  VLOG(1) << "lrb: snap connections: checking";
   LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
   if (!client || !client->has_coordinator()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -96,6 +103,17 @@ void AskPlugs(PlugsCallback done) {
   const uint64_t id = ++next;
   Requests()[id].done = std::move(done);
   client->SendToCoordinator("snap-plugs " + base::NumberToString(id));
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, base::BindOnce([](uint64_t id) {
+        auto request = Requests().find(id);
+        if (request == Requests().end()) {
+          return;  // answered
+        }
+        PlugsCallback late = std::move(request->second.done);
+        Requests().erase(request);
+        std::move(late).Run(Plugs());
+      }, id),
+      kAnswerTimeout);
 }
 
 std::string SnapName() {
@@ -104,159 +122,64 @@ std::string SnapName() {
   return name && !name->empty() ? *name : "low-ram-browser";
 }
 
-// The window's contents: a summary of what isn't working, a block per plug
-// (with the command that connects it when it isn't), and the buttons to
-// copy the commands and check again.
+std::string Command(size_t i) {
+  return "sudo snap connect " + SnapName() + ":" + kPlugs[i].name;
+}
+
+// The window's contents, built for one answer (`plugs`; empty: not a snap)
+// and never changed after: a summary of what isn't working, a block per
+// plug (with the command that connects it when it isn't), and the buttons
+// to copy the commands and check again. `max_blocks_height`: the blocks
+// scroll beyond it (the dialog is drawn inside its browser window, and cut
+// off where that ends). `check_again`: asks again and replaces the window.
 class SnapConnectionsView : public views::View {
   METADATA_HEADER(SnapConnectionsView, views::View)
 
  public:
-  // `max_blocks_height`: the blocks scroll beyond it (the dialog is drawn
-  // inside its browser window, and cut off where that ends).
-  explicit SnapConnectionsView(int max_blocks_height) {
+  SnapConnectionsView(const Plugs& plugs,
+                      int max_blocks_height,
+                      base::RepeatingClosure check_again)
+      : check_again_(std::move(check_again)) {
     SetLayoutManager(std::make_unique<views::BoxLayout>(
                          views::BoxLayout::Orientation::kVertical,
                          gfx::Insets::VH(16, 20), 14))
         ->set_cross_axis_alignment(
             views::BoxLayout::CrossAxisAlignment::kStretch);
 
-    // What isn't working right now, in plain words.
-    summary_ = AddChildView(std::make_unique<views::Label>(
-        u"Checking...", views::style::CONTEXT_LABEL,
-        views::style::STYLE_PRIMARY));
-    summary_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    summary_->SetMultiLine(true);
+    const bool snap = !plugs.empty();
+    if (!snap) {
+      VLOG(1) << "lrb: snap connections: Not running as a snap.";
+      auto* not_snap = AddChildView(std::make_unique<views::Label>(
+          u"Not running as a snap.", views::style::CONTEXT_LABEL,
+          views::style::STYLE_SECONDARY));
+      not_snap->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    } else {
+      // What isn't working right now, in plain words (filled below).
+      auto* summary = AddChildView(std::make_unique<views::Label>(
+          std::u16string(), views::style::CONTEXT_LABEL,
+          views::style::STYLE_PRIMARY));
+      summary->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+      summary->SetMultiLine(true);
 
-    not_snap_ = AddChildView(std::make_unique<views::Label>(
-        u"Not running as a snap.", views::style::CONTEXT_LABEL,
-        views::style::STYLE_SECONDARY));
-    not_snap_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    not_snap_->SetVisible(false);
-
-    // One block per plug: the feature and its state, the plug's name, and
-    // when not connected the command that connects it.
-    scroll_ = AddChildView(std::make_unique<views::ScrollView>());
-    scroll_->SetHorizontalScrollBarMode(
-        views::ScrollView::ScrollBarMode::kDisabled);
-    // Opaque, as the dialog: text on a transparent layer draws heavier.
-    scroll_->SetBackgroundColor(ui::kColorDialogBackground);
-    scroll_->ClipHeightTo(0, max_blocks_height);
-    views::View* blocks =
-        scroll_->SetContents(std::make_unique<views::View>());
-    // Room on the right for the scroll bar, drawn over the contents.
-    blocks->SetLayoutManager(std::make_unique<views::BoxLayout>(
-                                 views::BoxLayout::Orientation::kVertical,
-                                 gfx::Insets::TLBR(0, 0, 0, 12), 12))
-        ->set_cross_axis_alignment(
-            views::BoxLayout::CrossAxisAlignment::kStretch);
-    const gfx::FontList monospace({"monospace"}, gfx::Font::NORMAL, 13,
-                                  gfx::Font::Weight::NORMAL);
-    for (size_t i = 0; i < kPlugs.size(); ++i) {
-      Row& row = rows_[i];
-      auto* block = blocks->AddChildView(std::make_unique<views::View>());
-      block->SetLayoutManager(std::make_unique<views::BoxLayout>(
-                                  views::BoxLayout::Orientation::kVertical,
-                                  gfx::Insets(), 2))
+      auto* scroll = AddChildView(std::make_unique<views::ScrollView>());
+      scroll->SetHorizontalScrollBarMode(
+          views::ScrollView::ScrollBarMode::kDisabled);
+      // Opaque, as the dialog: text on a transparent layer draws heavier.
+      scroll->SetBackgroundColor(ui::kColorDialogBackground);
+      scroll->ClipHeightTo(0, max_blocks_height);
+      views::View* blocks =
+          scroll->SetContents(std::make_unique<views::View>());
+      // Room on the right for the scroll bar, drawn over the contents.
+      blocks->SetLayoutManager(std::make_unique<views::BoxLayout>(
+                                   views::BoxLayout::Orientation::kVertical,
+                                   gfx::Insets::TLBR(0, 0, 0, 12), 12))
           ->set_cross_axis_alignment(
               views::BoxLayout::CrossAxisAlignment::kStretch);
-
-      // The feature, and its state at the line's right end.
-      auto* line = block->AddChildView(std::make_unique<views::View>());
-      auto* line_layout =
-          line->SetLayoutManager(std::make_unique<views::BoxLayout>(
-              views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 16));
-      row.feature = line->AddChildView(std::make_unique<views::Label>(
-          kPlugs[i].feature, views::style::CONTEXT_LABEL,
-          views::style::STYLE_PRIMARY));
-      line_layout->SetFlexForView(row.feature, 1);
-      row.feature->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-      row.state = line->AddChildView(std::make_unique<views::Label>(
-          u"Checking...", views::style::CONTEXT_LABEL,
-          views::style::STYLE_SECONDARY));
-
-      auto* name = block->AddChildView(std::make_unique<views::Label>(
-          base::ASCIIToUTF16(kPlugs[i].name), views::style::CONTEXT_LABEL,
-          views::style::STYLE_SECONDARY));
-      name->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-
-      // Read-only, to select and copy; the text in the normal colour (read-
-      // only draws it greyed by default).
-      row.command = block->AddChildView(std::make_unique<views::Textfield>());
-      row.command->SetReadOnly(true);
-      row.command->SetTextColorId(ui::kColorTextfieldForeground);
-      row.command->SetFontList(monospace);
-      row.command->SetText(base::UTF8ToUTF16(Command(i)));
-      row.command->GetViewAccessibility().SetName(
-          u"Command to connect " + base::ASCIIToUTF16(kPlugs[i].name));
-      row.command->SetProperty(views::kMarginsKey,
-                               gfx::Insets::TLBR(4, 16, 0, 0));
-      row.command->SetVisible(false);
-    }
-
-    auto* buttons = AddChildView(std::make_unique<views::View>());
-    buttons->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 8));
-    copy_ = buttons->AddChildView(std::make_unique<views::MdTextButton>(
-        base::BindRepeating(&SnapConnectionsView::Copy,
-                            base::Unretained(this)),
-        u"Copy all commands"));
-    copy_->SetEnabled(false);
-    buttons->AddChildView(std::make_unique<views::MdTextButton>(
-        base::BindRepeating(&SnapConnectionsView::Check,
-                            base::Unretained(this)),
-        u"Check again"));
-
-    Check();
-  }
-
- private:
-  struct Row {
-    raw_ptr<views::Label> feature = nullptr;
-    raw_ptr<views::Label> state = nullptr;
-    raw_ptr<views::Textfield> command = nullptr;
-  };
-
-  static std::string Command(size_t i) {
-    return "sudo snap connect " + SnapName() + ":" + kPlugs[i].name;
-  }
-
-  // Asks the coordinator again; the summary and the states read
-  // "Checking..." until it answers.
-  void Check() {
-    weak_factory_.InvalidateWeakPtrs();  // an earlier answer is stale
-    summary_->SetText(u"Checking...");
-    for (Row& row : rows_) {
-      row.state->SetText(u"Checking...");
-      row.state->SetTextStyle(views::style::STYLE_SECONDARY);
-      row.state->SetEnabledColor(ui::kColorLabelForegroundSecondary);
-    }
-    VLOG(1) << "lrb: snap connections: checking";
-    AskPlugs(base::BindOnce(&SnapConnectionsView::Show,
-                            weak_factory_.GetWeakPtr()));
-  }
-
-  void Show(Plugs plugs) {
-    const bool snap = !plugs.empty();
-    not_snap_->SetVisible(!snap);
-    scroll_->SetVisible(snap);
-    copy_->SetVisible(snap);
-    summary_->SetVisible(snap);
-    missing_.clear();
-    if (snap) {
       for (size_t i = 0; i < kPlugs.size(); ++i) {
         // A plug the coordinator didn't name counts as not connected.
         auto it = plugs.find(kPlugs[i].name);
         const bool connected = it != plugs.end() && it->second;
-        Row& row = rows_[i];
-        // What is broken stands out: bold, the state in the alert colour.
-        row.feature->SetTextStyle(connected ? views::style::STYLE_PRIMARY
-                                            : views::style::STYLE_EMPHASIZED);
-        row.state->SetText(connected ? u"Working" : u"Not working");
-        row.state->SetTextStyle(connected ? views::style::STYLE_PRIMARY
-                                          : views::style::STYLE_EMPHASIZED);
-        row.state->SetEnabledColor(connected ? ui::kColorLabelForeground
-                                             : ui::kColorAlertHighSeverity);
-        row.command->SetVisible(!connected);
+        AddBlock(blocks, i, connected);
         VLOG(1) << "lrb: snap connection " << kPlugs[i].name << ": "
                 << (connected ? "Working" : "Not working");
         if (!connected) {
@@ -264,7 +187,7 @@ class SnapConnectionsView : public views::View {
         }
       }
       const size_t n = missing_.size();
-      summary_->SetText(
+      summary->SetText(
           n == 0 ? u"Everything is connected."
           : n == 1
               ? u"1 feature is not working: its snap connection is missing. "
@@ -276,14 +199,79 @@ class SnapConnectionsView : public views::View {
       VLOG(1) << "lrb: snap connections commands: "
               << (missing_.empty() ? "All connected."
                                    : base::JoinString(missing_, "; "));
-    } else {
-      VLOG(1) << "lrb: snap connections: Not running as a snap.";
     }
-    copy_->SetEnabled(!missing_.empty());
-    // The blocks or the note: the window's height follows.
-    if (views::Widget* widget = GetWidget()) {
-      widget->SetSize(widget->non_client_view()->GetPreferredSize());
+
+    auto* buttons = AddChildView(std::make_unique<views::View>());
+    buttons->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 8));
+    if (snap) {
+      auto* copy = buttons->AddChildView(std::make_unique<views::MdTextButton>(
+          base::BindRepeating(&SnapConnectionsView::Copy,
+                              base::Unretained(this)),
+          u"Copy all commands"));
+      copy->SetEnabled(!missing_.empty());
     }
+    check_ = buttons->AddChildView(std::make_unique<views::MdTextButton>(
+        base::BindRepeating(&SnapConnectionsView::CheckAgain,
+                            base::Unretained(this)),
+        u"Check again"));
+  }
+
+ private:
+  // The feature and its state, the plug's name, and when not connected the
+  // command that connects it.
+  static void AddBlock(views::View* blocks, size_t i, bool connected) {
+    auto* block = blocks->AddChildView(std::make_unique<views::View>());
+    block->SetLayoutManager(std::make_unique<views::BoxLayout>(
+                                views::BoxLayout::Orientation::kVertical,
+                                gfx::Insets(), 2))
+        ->set_cross_axis_alignment(
+            views::BoxLayout::CrossAxisAlignment::kStretch);
+
+    // What is broken stands out: bold, the state in the alert colour, at
+    // the line's right end.
+    auto* line = block->AddChildView(std::make_unique<views::View>());
+    auto* line_layout =
+        line->SetLayoutManager(std::make_unique<views::BoxLayout>(
+            views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 16));
+    const int style = connected ? views::style::STYLE_PRIMARY
+                                : views::style::STYLE_EMPHASIZED;
+    auto* feature = line->AddChildView(std::make_unique<views::Label>(
+        kPlugs[i].feature, views::style::CONTEXT_LABEL, style));
+    feature->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    line_layout->SetFlexForView(feature, 1);
+    auto* state = line->AddChildView(std::make_unique<views::Label>(
+        connected ? u"Working" : u"Not working", views::style::CONTEXT_LABEL,
+        style));
+    if (!connected) {
+      state->SetEnabledColor(ui::kColorAlertHighSeverity);
+    }
+
+    auto* name = block->AddChildView(std::make_unique<views::Label>(
+        base::ASCIIToUTF16(kPlugs[i].name), views::style::CONTEXT_LABEL,
+        views::style::STYLE_SECONDARY));
+    name->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+
+    if (connected) {
+      return;
+    }
+    // Read-only, to select and copy; the text in the normal colour (read-
+    // only draws it greyed by default).
+    auto* command = block->AddChildView(std::make_unique<views::Textfield>());
+    command->SetReadOnly(true);
+    command->SetTextColorId(ui::kColorTextfieldForeground);
+    command->SetFontList(gfx::FontList({"monospace"}, gfx::Font::NORMAL, 13,
+                                       gfx::Font::Weight::NORMAL));
+    command->SetText(base::UTF8ToUTF16(Command(i)));
+    command->GetViewAccessibility().SetName(
+        u"Command to connect " + base::ASCIIToUTF16(kPlugs[i].name));
+    command->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(4, 16, 0, 0));
+  }
+
+  // Once: the window is replaced when the answer arrives.
+  void CheckAgain() {
+    check_->SetEnabled(false);
+    check_again_.Run();
   }
 
   // Every missing command, one per line.
@@ -292,27 +280,46 @@ class SnapConnectionsView : public views::View {
         .WriteText(base::UTF8ToUTF16(base::JoinString(missing_, "\n")));
   }
 
-  raw_ptr<views::Label> summary_ = nullptr;
-  raw_ptr<views::Label> not_snap_ = nullptr;
-  raw_ptr<views::ScrollView> scroll_ = nullptr;  // the blocks
-  std::array<Row, kPlugs.size()> rows_;
-  raw_ptr<views::MdTextButton> copy_ = nullptr;
+  base::RepeatingClosure check_again_;
+  raw_ptr<views::MdTextButton> check_ = nullptr;
   std::vector<std::string> missing_;  // the commands Copy copies
-  base::WeakPtrFactory<SnapConnectionsView> weak_factory_{this};
 };
 
 BEGIN_METADATA(SnapConnectionsView)
 END_METADATA
 
 // Owns the dialog's delegate and widget (CLIENT_OWNS_WIDGET, as lrb's
-// windows), and itself, until the window closes. As About's.
+// windows), and itself, until the window closes. As About's, it is built
+// for its contents and never resized once shown: on Wayland the part a
+// window grows into afterwards may not take clicks.
 class SnapConnectionsWindow {
  public:
-  SnapConnectionsWindow(gfx::NativeView parent, int parent_height) {
+  // A window for `plugs` over `parent`'s, unless that is gone.
+  static void Open(base::WeakPtr<views::View> parent, Plugs plugs) {
+    if (!parent || !parent->GetWidget()) {
+      return;
+    }
+    new SnapConnectionsWindow(parent, plugs);
+  }
+
+  ~SnapConnectionsWindow() {
+    VLOG(1) << "lrb: snap connections: closed";
+    widget_->CloseNow();  // the native window too, now (see lrb windows)
+    widget_.reset();      // the widget before its delegate
+  }
+
+ private:
+  SnapConnectionsWindow(base::WeakPtr<views::View> parent, const Plugs& plugs)
+      : parent_(parent) {
+    views::Widget* parent_widget = parent->GetWidget();
     delegate_ = std::make_unique<views::DialogDelegate>();
     // The title, summary and buttons take about 320 pixels of the window.
     delegate_->SetContentsView(std::make_unique<SnapConnectionsView>(
-        std::max(parent_height - 320, 160)));
+        plugs,
+        std::max(parent_widget->GetWindowBoundsInScreen().height() - 320,
+                 160),
+        base::BindRepeating(&SnapConnectionsWindow::CheckAgain,
+                            weak_factory_.GetWeakPtr())));
     delegate_->SetTitle(u"Snap connections");
     // A fixed width (fits a 1024-pixel screen), so the wrapped summary's
     // height counts.
@@ -322,7 +329,8 @@ class SnapConnectionsWindow {
     delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Close");
     views::Widget::InitParams params =
         views::DialogDelegate::GetDialogWidgetInitParams(
-            delegate_.get(), gfx::NativeWindow(), parent, gfx::Rect());
+            delegate_.get(), gfx::NativeWindow(),
+            parent_widget->GetNativeView(), gfx::Rect());
     params.ownership = views::Widget::InitParams::CLIENT_OWNS_WIDGET;
     widget_ = std::make_unique<views::Widget>();
     widget_->Init(std::move(params));
@@ -335,17 +343,43 @@ class SnapConnectionsWindow {
         },
         base::Unretained(this)));
     widget_->Show();
+    // Where Close is in the browser window, once laid out (for the tests,
+    // which click it).
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&SnapConnectionsWindow::LogShown,
+                       weak_factory_.GetWeakPtr()),
+        base::Milliseconds(500));
   }
 
-  ~SnapConnectionsWindow() {
-    VLOG(1) << "lrb: snap connections: closed";
-    widget_->CloseNow();  // the native window too, now (see lrb windows)
-    widget_.reset();      // the widget before its delegate
+  void LogShown() {
+    views::View* close = delegate_->GetOkButton();
+    if (!close || !parent_ || !parent_->GetWidget()) {
+      return;
+    }
+    gfx::Point center = close->GetLocalBounds().CenterPoint();
+    views::View::ConvertPointToScreen(close, &center);
+    views::View::ConvertPointFromScreen(parent_->GetWidget()->GetRootView(),
+                                        &center);
+    VLOG(1) << "lrb: snap connections: shown, Close at " << center.x() << ","
+            << center.y();
   }
 
- private:
+  // Asks again; the answer replaces this window with one built for it.
+  void CheckAgain() {
+    AskPlugs(base::BindOnce(&SnapConnectionsWindow::Replace,
+                            weak_factory_.GetWeakPtr()));
+  }
+
+  void Replace(Plugs plugs) {
+    Open(parent_, std::move(plugs));
+    widget_->Close();  // deletes this, as above
+  }
+
+  base::WeakPtr<views::View> parent_;
   std::unique_ptr<views::DialogDelegate> delegate_;
   std::unique_ptr<views::Widget> widget_;
+  base::WeakPtrFactory<SnapConnectionsWindow> weak_factory_{this};
 };
 
 }  // namespace
@@ -357,12 +391,9 @@ bool RunningAsSnap() {
 }
 
 void ShowSnapConnections(base::WeakPtr<views::View> parent) {
-  if (!parent || !parent->GetWidget()) {
-    return;
-  }
-  new SnapConnectionsWindow(
-      parent->GetWidget()->GetNativeView(),
-      parent->GetWidget()->GetWindowBoundsInScreen().height());
+  // The answer first, then the window built for it (as About reads the
+  // credits first): never resized once shown.
+  AskPlugs(base::BindOnce(&SnapConnectionsWindow::Open, parent));
 }
 
 bool OnSnapPlugsLine(const std::string& line) {
