@@ -1528,8 +1528,10 @@ void WindowView::Find(bool forward, bool new_session) {
   auto options = blink::mojom::FindOptions::New();
   options->forward = forward;
   options->new_session = new_session;
-  contents->Find(++find_request_id_, text, std::move(options),
-                 /*skip_delay=*/!new_session);
+  // The reply handler shows the counts of whatever session is current, so
+  // the request id Find hands back is not needed.
+  contents->Find(text, std::move(options), /*skip_delay=*/!new_session,
+                 [](int /*request_id*/) {});
 }
 
 void WindowView::OnFindReply(int matches, int active, bool final_update) {

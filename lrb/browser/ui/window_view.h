@@ -376,7 +376,6 @@ class WindowView : public views::View,
   std::vector<GURL> history_urls_;  // the submenu's, by command id
   std::unique_ptr<views::MenuRunner> menu_runner_;
   std::unique_ptr<ShortcutHandler> shortcuts_;
-  int find_request_id_ = 0;
   base::CallbackListSubscription zoom_subscription_;
 
   base::WeakPtrFactory<WindowView> weak_factory_{this};
