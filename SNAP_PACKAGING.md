@@ -70,6 +70,12 @@ find missing interfaces (`journalctl -f` or `snappy-debug`), never to ship.
 | `removable-media` | Downloads to, uploads from `/media` and `/run/media` | `sudo snap connect low-ram-browser:removable-media` |
 | `u2f-devices` | WebAuthn with hardware security keys | `sudo snap connect low-ram-browser:u2f-devices` |
 
+lrb shows these to the user: the menu's "Snap connections..." lists which
+are connected, with the commands for the rest, and the first start that
+finds `browser-sandbox` or `password-manager-service` missing shows "Snap
+connections to make" in the bar (once; the marker is
+`$XDG_DATA_HOME/lrb/.snap-notice`).
+
 Auto-connected: `network`, `home`, `desktop`, `desktop-legacy`, `wayland`,
 `x11`, `opengl`, `audio-playback`, `gsettings`, `screen-inhibit-control`
 (the GNOME extension adds its own too).

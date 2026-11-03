@@ -146,6 +146,9 @@ class AboutView : public views::View {
       Note(u"Standard mode needs 3 GB of RAM.");
     } else if (reason == "available") {
       Note(u"Standard mode needs 1.5 GB free when lrb starts.");
+    } else if (reason == "snap") {
+      Note(u"Standard mode needs this snap's browser-sandbox connection: "
+           u"open Snap connections in the menu.");
     } else if (reason == "option") {
       Note(u"Lean mode was chosen in Settings.");
     }

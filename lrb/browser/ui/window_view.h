@@ -216,6 +216,7 @@ class WindowView : public views::View,
     kToggleBlocking,
     kSettings,
     kAbout,
+    kSnapConnections,
     kNewWindow,
     kReopenClosed,
     kPrint,
@@ -244,6 +245,9 @@ class WindowView : public views::View,
   void ForgetSiteData(const std::string& site);
   // The releases page (the "Update available" button).
   void OpenReleases();
+  // The snap connections window, from the notice (which then goes) or the
+  // menu.
+  void OpenSnapConnections();
 
   // Find in page: a row under the bar.
   void OpenFind();
@@ -346,6 +350,8 @@ class WindowView : public views::View,
   // This window's last downloads, newest first (kMaxDownloads).
   std::vector<DownloadStatus> downloads_;
   raw_ptr<views::LabelButton> update_ = nullptr;
+  // "Snap connections to make" (--lrb-snap-notice), until clicked.
+  raw_ptr<views::LabelButton> snap_notice_ = nullptr;
   ui::SimpleMenuModel download_menu_model_{this};
   raw_ptr<views::View> tab_row_ = nullptr;
   raw_ptr<views::View> question_row_ = nullptr;

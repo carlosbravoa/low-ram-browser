@@ -104,8 +104,14 @@ inline constexpr char kDarkPages[] = "lrb-dark-pages";
 // in About. One word: "option" (--mode or the settings asked for lean),
 // "refused" (standard was asked for, but Chromium's sandbox can't run here),
 // "memory" (less than 3 GiB of RAM), "available" (less than 1.5 GiB free at
-// start), "sandbox" (automatic, and Chromium's sandbox can't run here).
+// start), "sandbox" (automatic, and Chromium's sandbox can't run here),
+// "snap" (running as a snap whose browser-sandbox connection is missing).
 inline constexpr char kLeanReason[] = "lrb-lean-reason";
+
+// Window instances, once (the coordinator's marker, .snap-notice): a snap
+// connection that matters is missing. The bar offers the snap connections
+// window (ui/snap_connections_dialog.h).
+inline constexpr char kSnapNotice[] = "lrb-snap-notice";
 
 // Show only the settings window, then exit (started by the coordinator: the
 // one process allowed to write the settings).

@@ -75,6 +75,7 @@
 #include "lrb/browser/ui/file_picker.h"
 #include "lrb/browser/ui/login_prompt.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
+#include "lrb/browser/ui/snap_connections_dialog.h"
 #include "lrb/common/content_blocker.h"
 #include "lrb/common/lrb_descriptors.h"
 #include "lrb/common/safety_list.h"
@@ -401,6 +402,9 @@ void LrbContentBrowserClient::OnCoordinatorLine(const std::string& line) {
   }
   if (OnKeyringLine(line)) {
     return;  // saved passwords and autofill (keyring.h)
+  }
+  if (OnSnapPlugsLine(line)) {
+    return;  // the snap's connections (ui/snap_connections_dialog.h)
   }
   // "<command> [<argument>]"
   const size_t space = line.find(' ');

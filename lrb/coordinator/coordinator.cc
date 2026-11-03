@@ -18,6 +18,7 @@
 //                   [--adblock-setting=full|lean|off] [--adblock-file=PATH]
 //                   [--safety-lists=on|off] [--no-release-check]
 //                   [--no-confine] [--picker=PATH] [--keyring=PATH]
+//                   [--snap-notice]
 //                   [URL] [-- BROWSER_ARGS...]
 //
 // The mode: --mode, else the setting "mode" (settings.json: "lean",
@@ -77,6 +78,10 @@
 //                            saved passwords and autofill: "pw-*", "af-*",
 //                            lrb/coordinator/keyring_broker.h (the standard
 //                            instance names each password's site)
+//                            "snap-plugs <id>"    which of the snap's
+//                                                 connections are made (any
+//                                                 instance may ask; a page
+//                                                 learns no more than that)
 //                            "open-app <url>"     a link for another app
 //                                                 (mailto:, tel:, ...; percent-
 //                                                 encoded), the user agreed:
@@ -110,11 +115,27 @@
 //                            "close"              save your windows' history
 //                                                 and exit (never sent to the
 //                                                 standard instance)
+//                            "snap-plug <id> <plug> 0|1"
+//                                                 one per plug of kSnapPlugs,
+//                                                 in order (as a snap only),
+//                            "snap-plugs-done <id>"  then this: the answer to
+//                                                 "snap-plugs <id>"
 //
 // Launch switches it adds: --lrb-site (lean), --lrb-mode=standard,
 // --lrb-lean-reason=<word> (lean: why, for About),
 // --lrb-handoff=<token> (the window replaces another site's),
-// --lrb-latest-release=<version>, --lrb-resume, --lrb-adblock-file, ...
+// --lrb-latest-release=<version>, --lrb-resume, --lrb-adblock-file,
+// --lrb-snap-notice (once, see below), ...
+//
+// As a snap (SNAP_NAME set by snapd), six of the snap's connections
+// (kSnapPlugs) are not made on install; each enables one feature. Instances
+// never run programs, so the coordinator asks snapd (`snapctl is-connected
+// <plug>`, at most once a second per plug) and answers "snap-plugs". A
+// missing browser-sandbox connection is the lean reason "snap". The first
+// start that finds browser-sandbox or password-manager-service missing
+// creates $XDG_DATA_HOME/lrb/.snap-notice and gives that start's windows
+// --lrb-snap-notice (the window offers the checker); later starts don't.
+// --snap-notice gives the switch regardless, also outside a snap (debug).
 //
 // Lean mode, leaving a site parks its instance: its windows hide once the
 // other site's window is shown, and it stays alive for Back. At most
@@ -226,6 +247,21 @@ struct OpenOptions {
 
 constexpr size_t kMaxLine = 9000;  // longest URL plus the command
 
+// The snap's connections that aren't made on install, in the order the
+// window's checker lists them (snap/snapcraft.yaml; lrb's snap-connections
+// dialog): standard mode's sandbox, saved passwords, camera, microphone,
+// removable drives, security keys.
+constexpr const char* kSnapPlugs[] = {
+    "browser-sandbox", "password-manager-service", "camera",
+    "audio-record",    "removable-media",          "u2f-devices",
+};
+
+// The log line when a snap's coordinator finds no usable sandbox: the
+// connection is what's missing there.
+constexpr char kSnapSandboxMissing[] =
+    "lean mode: the snap's browser-sandbox connection is missing (sudo snap "
+    "connect low-ram-browser:browser-sandbox)";
+
 struct Options {
   std::string browser;
   std::string profiles_dir;
@@ -254,6 +290,7 @@ struct Options {
   std::string mode;
   bool release_check = true;
   bool confine = true;
+  bool snap_notice = false;  // --snap-notice: the window's notice, always
   std::string picker;  // lrb_picker; tests give a stand-in
   std::string keyring;  // lrb_keyring; tests give a stand-in
 };
@@ -597,6 +634,8 @@ bool ParseOptions(int argc, char** argv, Options& options) {
       options.verbose = true;
     } else if (arg == "--no-confine") {
       options.confine = false;
+    } else if (arg == "--snap-notice") {
+      options.snap_notice = true;
     } else if (arg.starts_with("--picker=")) {
       options.picker = arg.substr(9);
     } else if (arg.starts_with("--keyring=")) {
@@ -742,6 +781,7 @@ class Coordinator {
       : options_(std::move(options)),
         adblock_setting_(options_.adblock_setting),
         adblock_file_(options_.adblock_file),
+        snap_(!Getenv("SNAP_NAME").empty()),
         standard_profile_(DirName(options_.profiles_dir) + "/standard"),
         release_file_(options_.data_home + "/lrb/release/latest-release"),
         broker_(options_.picker.empty()
@@ -764,6 +804,7 @@ class Coordinator {
       return 1;
     }
     DecideMode();
+    DecideSnapNotice();
     latest_release_ = ValidRelease(ReadSmallFile(release_file_, 64));
     MaybeUpdateLists();
     LaunchFirst();
@@ -847,6 +888,10 @@ class Coordinator {
       if (SandboxCheck()) {
         standard_ = true;
         Log("standard mode (%s)", source.c_str());
+      } else if (snap_) {
+        lean_reason_ = "snap";
+        Log("standard mode refused (%s asked for it); %s", source.c_str(),
+            kSnapSandboxMissing);
       } else {
         lean_reason_ = "refused";
         Log("standard mode refused (%s asked for it): Chromium's sandbox "
@@ -867,12 +912,103 @@ class Coordinator {
       lean_reason_ = "available";
       Log("lean mode: %.1f GiB free at start (standard needs 1.5)", available);
     } else if (!SandboxCheck()) {
-      lean_reason_ = "sandbox";
-      Log("lean mode: Chromium's sandbox can't create a user namespace here "
-          "(AppArmor on Ubuntu 23.10+: docs/building.md)");
+      if (snap_) {
+        lean_reason_ = "snap";
+        Log("%s", kSnapSandboxMissing);
+      } else {
+        lean_reason_ = "sandbox";
+        Log("lean mode: Chromium's sandbox can't create a user namespace "
+            "here (AppArmor on Ubuntu 23.10+: docs/building.md)");
+      }
     } else {
       standard_ = true;
       Log("standard mode: %.1f GiB of RAM, %.1f GiB free", total, available);
+    }
+  }
+
+  // As a snap: the window's notice of connections to make
+  // (--lrb-snap-notice), on the first start that finds the sandbox's or the
+  // passwords' connection missing. The marker file keeps later starts quiet;
+  // deleting it brings the notice back. --snap-notice: always.
+  void DecideSnapNotice() {
+    if (options_.snap_notice) {
+      snap_notice_ = true;
+      return;
+    }
+    if (!snap_) {
+      return;
+    }
+    const std::string marker = options_.data_home + "/lrb/.snap-notice";
+    struct stat st = {};
+    if (stat(marker.c_str(), &st) == 0 ||
+        (IsConnected("browser-sandbox") &&
+         IsConnected("password-manager-service"))) {
+      return;
+    }
+    MakeDirs(options_.data_home + "/lrb", 0700);
+    const int fd = open(marker.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                        0600);
+    if (fd >= 0) {
+      close(fd);
+    } else if (errno == EEXIST) {
+      return;
+    } else {
+      // Shown anyway: better again next start than never.
+      Log("can't create %s: %s", marker.c_str(), strerror(errno));
+    }
+    snap_notice_ = true;
+    if (options_.verbose) {
+      Log("snap connections missing: windows get the notice");
+    }
+  }
+
+  // Whether the snap's connection `plug` is made: `snapctl is-connected
+  // <plug>` (from PATH) exits 0 within 2 s. Anything else, a timeout or no
+  // snapctl included, is not connected. Remembered for 1 s, so instances
+  // asking again and again run it at most once a second per plug.
+  bool IsConnected(const std::string& plug) {
+    const Clock::time_point now = Clock::now();
+    if (auto known = snap_plugs_.find(plug);
+        known != snap_plugs_.end() &&
+        now - known->second.first < std::chrono::seconds(1)) {
+      return known->second.second;
+    }
+    const pid_t pid = fork();
+    if (pid == 0) {
+      const int null = open("/dev/null", O_RDWR);
+      if (null >= 0) {
+        dup2(null, STDOUT_FILENO);
+        dup2(null, STDERR_FILENO);
+      }
+      execlp("snapctl", "snapctl", "is-connected", plug.c_str(), nullptr);
+      _exit(127);
+    }
+    const bool connected =
+        pid > 0 && WaitFor(pid, now + std::chrono::seconds(2)) == 0;
+    if (options_.verbose) {
+      Log("snapctl is-connected %s: %s", plug.c_str(),
+          connected ? "yes" : "no");
+    }
+    snap_plugs_[plug] = {Clock::now(), connected};
+    return connected;
+  }
+
+  // "snap-plugs <id>": a "snap-plug <id> <plug> 0|1" line per plug, in
+  // kSnapPlugs' order, then "snap-plugs-done <id>"; not a snap, only that.
+  void HandleSnapPlugs(Client& client, const std::string& id) {
+    if (!AllDigits(id, 20)) {
+      return;
+    }
+    std::string reply;
+    if (snap_) {
+      for (const char* plug : kSnapPlugs) {
+        reply += "snap-plug " + id + " " + plug +
+                 (IsConnected(plug) ? " 1\n" : " 0\n");
+      }
+    }
+    reply += "snap-plugs-done " + id + "\n";
+    if (!WriteAll(client.fd, reply)) {
+      Drop(client.fd);
     }
   }
 
@@ -1190,6 +1326,8 @@ class Coordinator {
                command == "is-bookmarked" || command == "bookmark-add" ||
                command == "bookmark-remove") {
       HandleBookmarks(client, command, args);
+    } else if (command == "snap-plugs") {
+      HandleSnapPlugs(client, args);
     }
   }
 
@@ -1536,6 +1674,9 @@ class Coordinator {
     }
     if (!standard_ && !lean_reason_.empty()) {
       args.push_back("--lrb-lean-reason=" + lean_reason_);
+    }
+    if (snap_notice_) {
+      args.push_back("--lrb-snap-notice");  // switches::kSnapNotice
     }
     for (const std::string& arg : options_.browser_args) {
       args.push_back(arg);
@@ -2236,6 +2377,12 @@ class Coordinator {
   // Lean mode: why (DecideMode), passed to lean instances for About
   // (--lrb-lean-reason).
   std::string lean_reason_;
+  // Running as a snap (SNAP_NAME is set): its connections are asked of
+  // snapd (IsConnected), and when they last were, with the answer.
+  const bool snap_;
+  std::map<std::string, std::pair<Clock::time_point, bool>> snap_plugs_;
+  // This start's windows get --lrb-snap-notice (DecideSnapNotice).
+  bool snap_notice_ = false;
   const std::string standard_profile_;
   pid_t standard_pid_ = 0;  // while it runs
   // Addresses for the standard instance before it connected.

@@ -277,6 +277,33 @@ cd low-ram-browser-<version>
 ./install.sh                 # optional: applications menu and PATH, no root
 ```
 
+## Snap
+
+Until the package is in the Snap Store, a local `.snap` (built as
+[SNAP_PACKAGING.md](SNAP_PACKAGING.md) says) installs with:
+
+```sh
+sudo snap install --dangerous low-ram-browser_<version>_amd64.snap
+```
+
+Six of the snap's connections are not made automatically; each enables one
+feature, and nothing else changes without them:
+
+| Connection | Enables |
+|---|---|
+| `browser-sandbox` | Standard mode: Chromium's sandbox, one sign-in for every site |
+| `password-manager-service` | Saved passwords and autofill, in the desktop's keyring |
+| `camera` | Camera |
+| `audio-record` | Microphone |
+| `removable-media` | Files on removable drives (/media, /run/media) |
+| `u2f-devices` | Security keys (WebAuthn) |
+
+Connect one in a terminal: `sudo snap connect low-ram-browser:<connection>`.
+The menu's "Snap connections..." shows which are made, with the commands
+for the others to copy, and checks again after you run them. On the first
+start that finds the sandbox's or the keyring's connection missing, the
+bar says "Snap connections to make"; a click opens the same window.
+
 ## Building and running
 
 Linux x86-64 build machine, about 100 GB of disk and 32 GB of RAM. Builds

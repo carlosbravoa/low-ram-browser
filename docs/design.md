@@ -41,6 +41,20 @@ nothing it installs reaches outside its own directory. Standard mode there
 is for the snap package, whose profile snapd generates (decided
 2026-11-02).
 
+As a snap (`snap/snapcraft.yaml`), six connections are left to the user
+(`browser-sandbox` for standard mode, the keyring, camera, microphone,
+removable drives, security keys). Instances run no programs, so the
+coordinator runs `snapctl is-connected <plug>` (at most once a second per
+plug, 2 s at most each) and answers an instance's `snap-plugs <id>` with a
+`snap-plug <id> <plug> 0|1` line per plug, then `snap-plugs-done <id>`
+(that line alone outside a snap). The window's "Snap connections..." menu
+item shows the answer and the commands that connect the rest. In a snap
+whose sandbox check fails, the lean reason is `snap`. The first start that
+finds `browser-sandbox` or `password-manager-service` missing creates the
+marker `$XDG_DATA_HOME/lrb/.snap-notice` and gives that start's windows
+`--lrb-snap-notice`, a notice in the bar; later starts see the marker and
+don't, so the notice is shown once (deleting the marker brings it back).
+
 Why two: the one-process-per-site model is what makes 1 GB and 2 GB
 machines usable, but it costs the shared sign-in, and a desktop with
 gigabytes to spare gains nothing from it. The security target in both is

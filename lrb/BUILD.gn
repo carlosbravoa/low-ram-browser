@@ -119,6 +119,8 @@ executable("lrb") {
     "browser/ui/lrb_platform_delegate.h",
     "browser/ui/settings_dialog.cc",
     "browser/ui/settings_dialog.h",
+    "browser/ui/snap_connections_dialog.cc",
+    "browser/ui/snap_connections_dialog.h",
     "browser/ui/suggestions_popup.cc",
     "browser/ui/suggestions_popup.h",
     "browser/ui/window_view.cc",

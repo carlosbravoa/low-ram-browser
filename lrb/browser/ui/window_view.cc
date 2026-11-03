@@ -44,6 +44,7 @@
 #include "lrb/browser/ui/about_dialog.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/browser/ui/settings_dialog.h"
+#include "lrb/browser/ui/snap_connections_dialog.h"
 #include "lrb/browser/ui/suggestions_popup.h"
 #include "lrb/browser/zoom_levels.h"
 #include "lrb/common/content_blocker.h"
@@ -476,6 +477,23 @@ WindowView::WindowView(TabActions actions) : actions_(std::move(actions)) {
     update_->SetTooltipText(base::UTF8ToUTF16(
         "lrb " + latest + " is out (this is " + std::string(Version()) +
         "): open the releases page"));
+  }
+  // A snap connection that matters is missing (the coordinator says so
+  // once, on the start after it noticed).
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kSnapNotice)) {
+    snap_notice_ = bar->AddChildView(std::make_unique<views::LabelButton>(
+        base::BindRepeating(&WindowView::OpenSnapConnections,
+                            base::Unretained(this)),
+        u"Snap connections to make"));
+    snap_notice_->SetImageModel(
+        views::Button::STATE_NORMAL,
+        ui::ImageModel::FromVectorIcon(vector_icons::kSettingsIcon,
+                                       ui::kColorIcon, 16));
+    snap_notice_->SetTooltipText(
+        u"Features this snap can't use until connected: open Snap "
+        u"connections");
+    VLOG(1) << "lrb: snap notice: Snap connections to make";
   }
 
   bar->AddChildView(views::CreateVectorImageButtonWithNativeTheme(
@@ -1436,6 +1454,16 @@ void WindowView::OpenReleases() {
   }
 }
 
+void WindowView::OpenSnapConnections() {
+  if (snap_notice_) {
+    // Seen: gone from this window. Hidden, not removed: this may run in
+    // its own click.
+    snap_notice_->SetVisible(false);
+    VLOG(1) << "lrb: snap notice: seen";
+  }
+  ShowSnapConnections(weak_factory_.GetWeakPtr());
+}
+
 void WindowView::ShowInFolder(const DownloadStatus& download) {
   if (!download.broker_id.empty()) {
     if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get()) {
@@ -1701,6 +1729,9 @@ void WindowView::ShowMenuWith(std::vector<Suggestion> bookmarks) {
                             base::UTF8ToUTF16(site_));
   }
   menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
+  if (RunningAsSnap()) {
+    menu_model_.AddItem(kSnapConnections, u"Snap connections...");
+  }
   menu_model_.AddItem(kSettings, u"Settings...");
   menu_model_.AddItem(kAbout, u"About lrb");
   menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
@@ -1895,6 +1926,9 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
                       }
                     },
                     weak_factory_.GetWeakPtr()));
+      break;
+    case kSnapConnections:
+      OpenSnapConnections();
       break;
     case kDismissDownload:
       download_status_.reset();
