@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -16,7 +17,9 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/environment.h"
 #include "base/i18n/icu_util.h"
+#include "base/nix/xdg_util.h"
 #include "content/public/app/content_main.h"
 #include "lrb/app/lrb_main_delegate.h"
 #include "lrb/browser/site.h"
@@ -114,6 +117,20 @@ int main(int argc, const char** argv) {
   }
   if (HasArg(argc, argv, lrb::switches::kSiteOf)) {
     return PrintSiteOf(argc, argv);
+  }
+  // The launcher's startup token (XDG_ACTIVATION_TOKEN, or X11's
+  // DESKTOP_STARTUP_ID), which the coordinator hands to the first window
+  // only: kept for the first window's activation on show
+  // (ui/ozone/platform/{wayland,x11}, TakeXdgActivationToken), which ends
+  // the desktop's busy cursor, and out of the environment so no child
+  // process inherits it. In the browser process, before any thread, as
+  // Chrome does (chrome_main_delegate.cc).
+  if (!HasArg(argc, argv, "type")) {
+    std::unique_ptr<base::Environment> env = base::Environment::Create();
+    base::nix::ExtractXdgActivationTokenFromEnv(*env);
+    // It takes one of the two; the launcher may have set both.
+    env->UnSetVar(base::nix::kXdgActivationTokenEnvVar);
+    env->UnSetVar(base::nix::kDesktopStartupIdEnvVar);
   }
   lrb::LrbMainDelegate delegate;
   content::ContentMainParams params(&delegate);

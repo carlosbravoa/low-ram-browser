@@ -129,16 +129,13 @@ std::string Command(size_t i) {
 // The window's contents, built for one answer (`plugs`; empty: not a snap)
 // and never changed after: a summary of what isn't working, a block per
 // plug (with the command that connects it when it isn't), and the buttons
-// to copy the commands and check again. `max_blocks_height`: the blocks
-// scroll beyond it (the dialog is drawn inside its browser window, and cut
-// off where that ends). `check_again`: asks again and replaces the window.
+// to copy the commands and check again. `check_again`: asks again and
+// replaces the window.
 class SnapConnectionsView : public views::View {
   METADATA_HEADER(SnapConnectionsView, views::View)
 
  public:
-  SnapConnectionsView(const Plugs& plugs,
-                      int max_blocks_height,
-                      base::RepeatingClosure check_again)
+  SnapConnectionsView(const Plugs& plugs, base::RepeatingClosure check_again)
       : check_again_(std::move(check_again)) {
     SetLayoutManager(std::make_unique<views::BoxLayout>(
                          views::BoxLayout::Orientation::kVertical,
@@ -161,14 +158,15 @@ class SnapConnectionsView : public views::View {
       summary->SetHorizontalAlignment(gfx::ALIGN_LEFT);
       summary->SetMultiLine(true);
 
-      auto* scroll = AddChildView(std::make_unique<views::ScrollView>());
-      scroll->SetHorizontalScrollBarMode(
+      // The blocks scroll when the window is too short for them all
+      // (ShrinkBlocksBy).
+      scroll_ = AddChildView(std::make_unique<views::ScrollView>());
+      scroll_->SetHorizontalScrollBarMode(
           views::ScrollView::ScrollBarMode::kDisabled);
       // Opaque, as the dialog: text on a transparent layer draws heavier.
-      scroll->SetBackgroundColor(ui::kColorDialogBackground);
-      scroll->ClipHeightTo(0, max_blocks_height);
+      scroll_->SetBackgroundColor(ui::kColorDialogBackground);
       views::View* blocks =
-          scroll->SetContents(std::make_unique<views::View>());
+          scroll_->SetContents(std::make_unique<views::View>());
       // Room on the right for the scroll bar, drawn over the contents.
       blocks->SetLayoutManager(std::make_unique<views::BoxLayout>(
                                    views::BoxLayout::Orientation::kVertical,
@@ -186,6 +184,8 @@ class SnapConnectionsView : public views::View {
           missing_.push_back(Command(i));
         }
       }
+      blocks_height_ = blocks->GetPreferredSize().height();
+      scroll_->ClipHeightTo(0, blocks_height_);
       const size_t n = missing_.size();
       summary->SetText(
           n == 0 ? u"Everything is connected."
@@ -217,7 +217,20 @@ class SnapConnectionsView : public views::View {
         u"Check again"));
   }
 
+ // The blocks `pixels` shorter (they scroll), down to kMinBlocksHeight so
+  // the summary and the buttons always stay. False if there are none.
+  bool ShrinkBlocksBy(int pixels) {
+    if (!scroll_) {
+      return false;
+    }
+    blocks_height_ = std::max(blocks_height_ - pixels, kMinBlocksHeight);
+    scroll_->ClipHeightTo(0, blocks_height_);
+    return true;
+  }
+
  private:
+  static constexpr int kMinBlocksHeight = 60;
+
   // The feature and its state, the plug's name, and when not connected the
   // command that connects it.
   static void AddBlock(views::View* blocks, size_t i, bool connected) {
@@ -228,8 +241,8 @@ class SnapConnectionsView : public views::View {
         ->set_cross_axis_alignment(
             views::BoxLayout::CrossAxisAlignment::kStretch);
 
-    // What is broken stands out: bold, the state in the alert colour, at
-    // the line's right end.
+    // What is broken stands out: bold, and a cross at the line's right end
+    // (a check when it works), the word as its tooltip and name.
     auto* line = block->AddChildView(std::make_unique<views::View>());
     auto* line_layout =
         line->SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -240,12 +253,12 @@ class SnapConnectionsView : public views::View {
         kPlugs[i].feature, views::style::CONTEXT_LABEL, style));
     feature->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     line_layout->SetFlexForView(feature, 1);
+    const std::u16string word = connected ? u"Working" : u"Not working";
     auto* state = line->AddChildView(std::make_unique<views::Label>(
-        connected ? u"Working" : u"Not working", views::style::CONTEXT_LABEL,
+        connected ? u"\u2705" : u"\u274C", views::style::CONTEXT_LABEL,
         style));
-    if (!connected) {
-      state->SetEnabledColor(ui::kColorAlertHighSeverity);
-    }
+    state->SetCustomTooltipText(word);
+    state->GetViewAccessibility().SetName(word);
 
     auto* name = block->AddChildView(std::make_unique<views::Label>(
         base::ASCIIToUTF16(kPlugs[i].name), views::style::CONTEXT_LABEL,
@@ -281,6 +294,8 @@ class SnapConnectionsView : public views::View {
   }
 
   base::RepeatingClosure check_again_;
+  raw_ptr<views::ScrollView> scroll_ = nullptr;  // the blocks (in a snap)
+  int blocks_height_ = 0;
   raw_ptr<views::MdTextButton> check_ = nullptr;
   std::vector<std::string> missing_;  // the commands Copy copies
 };
@@ -309,21 +324,26 @@ class SnapConnectionsWindow {
   }
 
  private:
+  // Kept free around the dialog inside the browser window.
+  static constexpr int kMargin = 24;
+
   SnapConnectionsWindow(base::WeakPtr<views::View> parent, const Plugs& plugs)
       : parent_(parent) {
     views::Widget* parent_widget = parent->GetWidget();
+    // The dialog is drawn inside the browser window, and must fit in it: on
+    // Wayland a child window takes no clicks beyond its parent's edge.
+    const gfx::Size room =
+        parent_widget->GetClientAreaBoundsInScreen().size() -
+        gfx::Size(kMargin, kMargin);
     delegate_ = std::make_unique<views::DialogDelegate>();
-    // The title, summary and buttons take about 320 pixels of the window.
-    delegate_->SetContentsView(std::make_unique<SnapConnectionsView>(
-        plugs,
-        std::max(parent_widget->GetWindowBoundsInScreen().height() - 320,
-                 160),
-        base::BindRepeating(&SnapConnectionsWindow::CheckAgain,
-                            weak_factory_.GetWeakPtr())));
+    auto* view = delegate_->SetContentsView(
+        std::make_unique<SnapConnectionsView>(
+            plugs, base::BindRepeating(&SnapConnectionsWindow::CheckAgain,
+                                       weak_factory_.GetWeakPtr())));
     delegate_->SetTitle(u"Snap connections");
-    // A fixed width (fits a 1024-pixel screen), so the wrapped summary's
-    // height counts.
-    delegate_->set_fixed_width(560);
+    // A fixed width (fits a 1024-pixel screen, and the browser window), so
+    // the wrapped summary's height counts.
+    delegate_->set_fixed_width(std::max(std::min(560, room.width()), 360));
     delegate_->SetModalType(ui::mojom::ModalType::kWindow);
     delegate_->SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk));
     delegate_->SetButtonLabel(ui::mojom::DialogButton::kOk, u"Close");
@@ -334,6 +354,15 @@ class SnapConnectionsWindow {
     params.ownership = views::Widget::InitParams::CLIENT_OWNS_WIDGET;
     widget_ = std::make_unique<views::Widget>();
     widget_->Init(std::move(params));
+    // Too tall for the browser window: the blocks give up the excess (they
+    // scroll), before the window is shown.
+    const int excess = widget_->GetWindowBoundsInScreen().height() -
+                       room.height();
+    if (excess > 0 && view->ShrinkBlocksBy(excess)) {
+      const gfx::Size size = widget_->non_client_view()->GetPreferredSize();
+      widget_->SetSize(size);
+      widget_->CenterWindow(size);
+    }
     // Closing (Close, Escape, the close button) deletes all this, after the
     // event that closed it: not inside its own window's event.
     widget_->MakeCloseSynchronous(base::BindOnce(
@@ -361,8 +390,11 @@ class SnapConnectionsWindow {
     views::View::ConvertPointToScreen(close, &center);
     views::View::ConvertPointFromScreen(parent_->GetWidget()->GetRootView(),
                                         &center);
+    const gfx::Size window =
+        parent_->GetWidget()->GetClientAreaBoundsInScreen().size();
     VLOG(1) << "lrb: snap connections: shown, Close at " << center.x() << ","
-            << center.y();
+            << center.y() << " in " << window.width() << "x"
+            << window.height();
   }
 
   // Asks again; the answer replaces this window with one built for it.

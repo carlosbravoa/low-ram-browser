@@ -42,6 +42,7 @@
 #include "lrb/browser/print.h"
 #include "lrb/browser/site.h"
 #include "lrb/browser/ui/about_dialog.h"
+#include "lrb/browser/ui/blocking_bubble.h"
 #include "lrb/browser/ui/lrb_platform_delegate.h"
 #include "lrb/browser/ui/settings_dialog.h"
 #include "lrb/browser/ui/snap_connections_dialog.h"
@@ -452,9 +453,11 @@ WindowView::WindowView(TabActions actions) : actions_(std::move(actions)) {
   zoom_->SetTooltipText(u"Zoom: click to reset (Ctrl+0)");
   zoom_->SetVisible(false);
 
-  // The blocked count; a click offers turning blocking off for the site.
+  // The blocked count; a click explains it and offers turning blocking off
+  // for the site (ShowBlockingBubble).
   blocked_ = bar->AddChildView(std::make_unique<views::LabelButton>(
-      base::BindRepeating(&WindowView::ShowMenu, base::Unretained(this))));
+      base::BindRepeating(&WindowView::ShowBlockingInfo,
+                          base::Unretained(this))));
   blocked_->SetImageModel(
       views::Button::STATE_NORMAL,
       ui::ImageModel::FromVectorIcon(vector_icons::kShieldIcon,
@@ -1042,6 +1045,27 @@ void WindowView::Search(std::u16string terms,
 }
 
 void WindowView::SetBlocked(int count) {
+  if (count > 0 && !blocked_->GetVisible()) {
+    // Where the shield is in the window, once laid out (for the tests,
+    // which click it).
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<WindowView> view) {
+              if (!view || !view->blocked_->GetVisible() ||
+                  !view->GetWidget()) {
+                return;
+              }
+              gfx::Point center =
+                  view->blocked_->GetLocalBounds().CenterPoint();
+              views::View::ConvertPointToTarget(
+                  view->blocked_, view->GetWidget()->GetRootView(), &center);
+              VLOG(1) << "lrb: blocking shield at " << center.x() << ","
+                      << center.y();
+            },
+            weak_factory_.GetWeakPtr()),
+        base::Milliseconds(500));
+  }
   blocked_->SetVisible(count > 0);
   blocked_->SetText(base::NumberToString16(count));
   blocked_->SetTooltipText(base::NumberToString16(count) +
@@ -1352,6 +1376,44 @@ void WindowView::ShowDownload(const DownloadStatus& status) {
            : u"Saving to ") +
       status.path.LossyDisplayName());
   download_->SetVisible(true);
+}
+
+void WindowView::ShowBlockingInfo() {
+  int blocked = 0;
+  base::StringToInt(blocked_->GetText(), &blocked);
+  std::optional<bool> enabled;
+  if (ContentBlocker::loaded() && !site_.empty()) {
+    // Standard mode: per site in the one instance; lean: the instance's.
+    enabled = StandardMode() ? ContentBlocker::EnabledFor(url_)
+                             : ContentBlocker::enabled();
+  }
+  ShowBlockingBubble(
+      blocked_, blocked, site_, enabled,
+      base::BindOnce(
+          [](base::WeakPtr<WindowView> view) {
+            if (view) {
+              view->ToggleBlocking();
+            }
+          },
+          weak_factory_.GetWeakPtr()),
+      base::BindOnce(
+          [](base::WeakPtr<WindowView> view) {
+            if (view) {
+              view->OpenSettings();
+            }
+          },
+          weak_factory_.GetWeakPtr()));
+}
+
+void WindowView::OpenSettings() {
+  // Confined under the coordinator, this instance can't write the
+  // settings: the coordinator opens them in a process of their own.
+  if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
+      client && client->has_coordinator()) {
+    client->SendToCoordinator("open-settings");
+  } else {
+    ShowSettings(weak_factory_.GetWeakPtr());
+  }
 }
 
 void WindowView::ToggleBlocking() {
@@ -1908,14 +1970,7 @@ void WindowView::ExecuteCommand(int command_id, int event_flags) {
       ToggleBlocking();
       break;
     case kSettings:
-      // Confined under the coordinator, this instance can't write the
-      // settings: the coordinator opens them in a process of their own.
-      if (LrbContentBrowserClient* client = LrbContentBrowserClient::Get();
-          client && client->has_coordinator()) {
-        client->SendToCoordinator("open-settings");
-      } else {
-        ShowSettings(weak_factory_.GetWeakPtr());
-      }
+      OpenSettings();
       break;
     case kAbout:
       ShowAbout(weak_factory_.GetWeakPtr(),

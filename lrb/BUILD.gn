@@ -107,6 +107,8 @@ executable("lrb") {
     "browser/zoom_levels.h",
     "browser/ui/about_dialog.cc",
     "browser/ui/about_dialog.h",
+    "browser/ui/blocking_bubble.cc",
+    "browser/ui/blocking_bubble.h",
     "browser/ui/context_menu.cc",
     "browser/ui/context_menu.h",
     "browser/ui/file_picker.cc",

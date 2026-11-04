@@ -238,6 +238,10 @@ class WindowView : public views::View,
   void ShowInFolder(const DownloadStatus& download);
   // Content blocking off (or back on) for this site, then reload.
   void ToggleBlocking();
+  // The shield's bubble: what the count means, the switch, Settings.
+  void ShowBlockingInfo();
+  // Settings: the coordinator's window when coordinated, else here.
+  void OpenSettings();
   // "Forget this site's data": asked in the question row, then the site's
   // cookies, storage and cache, its permission answers and zoom go, and its
   // pages reload.

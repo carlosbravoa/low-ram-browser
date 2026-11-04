@@ -800,6 +800,7 @@ class Coordinator {
                  [this](int fd, const std::string& line) { Send(fd, line); }) {}
 
   int Run() {
+    TakeStartupToken();
     if (!Listen()) {
       return 1;
     }
@@ -1701,8 +1702,12 @@ class Coordinator {
     }
 
     const pid_t pid = Spawn(std::move(args), profile, /*settings_writer=*/false,
-                            /*allow_sandbox=*/standard_);
+                            /*allow_sandbox=*/standard_,
+                            /*startup_token=*/true);
     if (pid > 0) {
+      // The first window had it.
+      startup_token_.clear();
+      startup_id_.clear();
       ++children_;
       if (standard_) {
         standard_pid_ = pid;
@@ -1712,6 +1717,18 @@ class Coordinator {
         without_engine_.insert(pid);
       }
     }
+  }
+
+  // The launcher's startup token (XDG_ACTIVATION_TOKEN, DESKTOP_STARTUP_ID):
+  // the desktop shows a busy cursor until a window activates with it. Taken
+  // out of the environment, so no other child (the helpers, snapctl,
+  // xdg-open, later windows) inherits it; the first window instance gets it
+  // (Launch). A token is single-use.
+  void TakeStartupToken() {
+    startup_token_ = Getenv("XDG_ACTIVATION_TOKEN");
+    startup_id_ = Getenv("DESKTOP_STARTUP_ID");
+    unsetenv("XDG_ACTIVATION_TOKEN");
+    unsetenv("DESKTOP_STARTUP_ID");
   }
 
   // The instance in use: the most recently active one with a window shown.
@@ -2080,16 +2097,25 @@ class Coordinator {
   }
 
   // Starts `args` (lrb), confined to writing `rw_dir` (see InstancePolicy).
+  // `startup_token`: a window instance, given the launcher's startup token
+  // if the coordinator still holds it (TakeStartupToken).
   pid_t Spawn(std::vector<std::string> args,
               const std::string& rw_dir,
               bool settings_writer = false,
-              bool allow_sandbox = false) {
+              bool allow_sandbox = false,
+              bool startup_token = false) {
     if (ProfileUnused(rw_dir)) {
       // Left by a coordinator that was killed or crashed.
       coordinator::FileBroker::CleanProfile(rw_dir);
     }
     const pid_t pid = fork();
     if (pid == 0) {
+      if (startup_token && !startup_token_.empty()) {
+        setenv("XDG_ACTIVATION_TOKEN", startup_token_.c_str(), 1);
+      }
+      if (startup_token && !startup_id_.empty()) {
+        setenv("DESKTOP_STARTUP_ID", startup_id_.c_str(), 1);
+      }
       ConfineChild(rw_dir, settings_writer, allow_sandbox, args[0]);
       std::vector<char*> argv;
       for (std::string& arg : args) {
@@ -2424,6 +2450,9 @@ class Coordinator {
   pid_t settings_pid_ = 0;  // the settings window, while open
   // The site last launched for a user's request, until it registers.
   std::string wanted_site_;
+  // The launcher's startup token, until the first window instance has it.
+  std::string startup_token_;
+  std::string startup_id_;
 };
 
 }  // namespace

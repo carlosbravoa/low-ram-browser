@@ -4,6 +4,7 @@
 
 #include "lrb/browser/ui/about_dialog.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -29,8 +30,10 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/color/color_id.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/link.h"
+#include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/widget/widget.h"
@@ -178,15 +181,30 @@ class AboutWindow {
   AboutWindow(const base::FilePath& credits,
               base::RepeatingCallback<void(const GURL&)> open_tab,
               gfx::NativeView parent) {
+    // The dialog is drawn inside the browser window, and must fit in it: on
+    // Wayland a child window takes no clicks beyond its parent's edge.
+    views::Widget* parent_widget =
+        views::Widget::GetWidgetForNativeView(parent);
+    const gfx::Size room =
+        parent_widget ? parent_widget->GetClientAreaBoundsInScreen().size() -
+                            gfx::Size(24, 24)
+                      : gfx::Size(480, 10000);
     delegate_ = std::make_unique<views::DialogDelegate>();
-    delegate_->SetContentsView(std::make_unique<AboutView>(
+    // In a scroll view, for a window too short for it all.
+    auto* scroll = delegate_->SetContentsView(
+        std::make_unique<views::ScrollView>());
+    scroll->SetHorizontalScrollBarMode(
+        views::ScrollView::ScrollBarMode::kDisabled);
+    // Opaque, as the dialog: text on a transparent layer draws heavier.
+    scroll->SetBackgroundColor(ui::kColorDialogBackground);
+    scroll->SetContents(std::make_unique<AboutView>(
         credits, std::move(open_tab),
         base::BindRepeating(&AboutWindow::Close,
                             weak_factory_.GetWeakPtr())));
     delegate_->SetTitle(u"About lrb");
     // A fixed width, so the wrapped paragraphs' heights count (else the
-    // last line is cut off).
-    delegate_->set_fixed_width(480);
+    // last line is cut off); narrower in a narrow window.
+    delegate_->set_fixed_width(std::max(std::min(480, room.width()), 320));
     delegate_->SetModalType(ui::mojom::ModalType::kWindow);
     delegate_->SetButtons(
         static_cast<int>(ui::mojom::DialogButton::kOk));
@@ -197,6 +215,17 @@ class AboutWindow {
     params.ownership = views::Widget::InitParams::CLIENT_OWNS_WIDGET;
     widget_ = std::make_unique<views::Widget>();
     widget_->Init(std::move(params));
+    // Too tall for the browser window: the text gives up the excess (it
+    // scrolls), before the window is shown.
+    const int excess = widget_->GetWindowBoundsInScreen().height() -
+                       room.height();
+    if (excess > 0) {
+      widget_->GetRootView()->DeprecatedLayoutImmediately();
+      scroll->ClipHeightTo(0, std::max(scroll->height() - excess, 80));
+      const gfx::Size size = widget_->non_client_view()->GetPreferredSize();
+      widget_->SetSize(size);
+      widget_->CenterWindow(size);
+    }
     // Closing (Close, the close button, a link) deletes all this, after the
     // event that closed it: not inside its own window's event.
     widget_->MakeCloseSynchronous(base::BindOnce(
