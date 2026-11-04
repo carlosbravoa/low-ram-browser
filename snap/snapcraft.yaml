@@ -32,9 +32,26 @@ contact: https://github.com/carlosbravoa/low-ram-browser/issues
 grade: devel
 confinement: strict
 
+# Nothing is compiled, so either architecture's snap can be built on an
+# amd64 machine (`snapcraft pack --build-for arm64`).
 platforms:
   amd64:
+    build-on: [amd64]
+    build-for: [amd64]
   arm64:
+    build-on: [amd64, arm64]
+    build-for: [arm64]
+
+# Ubuntu's arm64 archive, for the arm64 libraries when building for arm64
+# on an amd64 machine (the `:arm64` stage packages below).
+package-repositories:
+  - type: apt
+    formats: [deb]
+    architectures: [arm64]
+    components: [main, universe]
+    suites: [noble, noble-updates, noble-security]
+    url: http://ports.ubuntu.com/ubuntu-ports
+    key-id: F6ECB3762474EDA9D21B7022871920D1991BC93C
 
 plugs:
   # Chromium's own sandbox (standard mode): user namespaces, chroot.
@@ -79,21 +96,40 @@ parts:
       - curl
       - ca-certificates
     stage-packages:
-      - libnss3
-      - libnspr4
-      - libasound2t64
-      - libgbm1
-      - libdrm2
-      - libxkbcommon0
-      - libxres1
-      - libxcomposite1
-      - libxdamage1
-      - libxfixes3
-      - libxrandr2
-      - libxi6
-      - libatk-bridge2.0-0t64
-      - libatspi2.0-0t64
-      - libsecret-1-0
+      # The libraries of the architecture built for, which the build
+      # machine may not be (nothing is compiled here).
+      - to arm64:
+        - libnss3:arm64
+        - libnspr4:arm64
+        - libasound2t64:arm64
+        - libgbm1:arm64
+        - libdrm2:arm64
+        - libxkbcommon0:arm64
+        - libxres1:arm64
+        - libxcomposite1:arm64
+        - libxdamage1:arm64
+        - libxfixes3:arm64
+        - libxrandr2:arm64
+        - libxi6:arm64
+        - libatk-bridge2.0-0t64:arm64
+        - libatspi2.0-0t64:arm64
+        - libsecret-1-0:arm64
+      - else:
+        - libnss3
+        - libnspr4
+        - libasound2t64
+        - libgbm1
+        - libdrm2
+        - libxkbcommon0
+        - libxres1
+        - libxcomposite1
+        - libxdamage1
+        - libxfixes3
+        - libxrandr2
+        - libxi6
+        - libatk-bridge2.0-0t64
+        - libatspi2.0-0t64
+        - libsecret-1-0
     override-build: |
       set -eu
       version="0.1.0-alpha.8"

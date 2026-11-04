@@ -39,9 +39,18 @@ time.
 The part takes `dist/release-<version>/low-ram-browser-<version>-linux-<cpu>.tar.zst`
 when it exists (the machine that made the release) and downloads the
 release's file otherwise; either way the SHA-256 in `snapcraft.yaml` must
-match. Output: `low-ram-browser_<version>_amd64.snap` (and `_arm64.snap` when
-built for arm64, on an arm64 builder or with `--build-for arm64` where
-snapcraft supports it).
+match. Output: `low-ram-browser_<version>_amd64.snap`. The arm64 snap builds on
+the same amd64 machine, since nothing is compiled:
+
+```sh
+SNAPCRAFT_BUILD_INFO=1 snapcraft pack --build-for arm64
+```
+
+The recipe adds Ubuntu's arm64 archive (`package-repositories`) and asks
+for the `:arm64` variant of each staged library when building for arm64;
+without that, snapcraft staged the amd64 libraries under aarch64 binaries
+(checked 2026-11-03). The arm64 snap can't be validated in LXD here and
+its tarball hasn't run on a Pi.
 
 Check the manifest is in:
 
