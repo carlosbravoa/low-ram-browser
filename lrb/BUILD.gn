@@ -13,6 +13,7 @@
 import("//build/rust/rust_static_library.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 import("//printing/buildflags/buildflags.gni")
+import("//tools/grit/grit_rule.gni")
 import("//tools/grit/repack.gni")
 import("//testing/test.gni")
 
@@ -180,6 +181,7 @@ executable("lrb") {
     "//media",
     "//components/download/public/common:public",
     "//net",
+    ":resources",
     "//net:net_resources",
     "//services/network:network_service",
     "//services/network/public/cpp",
@@ -222,8 +224,20 @@ executable("lrb") {
   ]
 }
 
+# lrb's own resources (the window icon), into lrb.pak.
+grit("resources") {
+  source = "browser/ui/resources/lrb_resources.grd"
+  # The ids are in the .grd (content_shell's range, unused in lrb.pak).
+  resource_ids = ""
+  outputs = [
+    "grit/lrb_resources.h",
+    "lrb_resources.pak",
+  ]
+}
+
 # lrb.pak: content_shell's resource pak without its test resources, the
-# shell's own resources and the DevTools frontend (lrb serves none).
+# shell's own resources and the DevTools frontend (lrb serves none); with
+# lrb's own.
 repack("pak") {
   sources = [
     "$root_gen_dir/base/tracing/protos/tracing_proto_resources.pak",
@@ -239,6 +253,7 @@ repack("pak") {
     "$root_gen_dir/content/service_worker_resources.pak",
     "$root_gen_dir/content/traces_internals_resources.pak",
     "$root_gen_dir/mojo/public/js/mojo_bindings_resources.pak",
+    "$root_gen_dir/lrb/lrb_resources.pak",
     "$root_gen_dir/net/net_resources.pak",
     "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
     "$root_gen_dir/third_party/blink/public/resources/blink_scaled_resources_100_percent.pak",
@@ -264,6 +279,7 @@ repack("pak") {
     "//content/browser/tracing:resources",
     "//content/browser/webrtc/resources",
     "//mojo/public/js:resources",
+    ":resources",
     "//net:net_resources",
     "//third_party/blink/public:devtools_inspector_resources",
     "//third_party/blink/public:resources",

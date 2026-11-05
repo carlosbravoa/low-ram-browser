@@ -42,7 +42,7 @@ for cpu in "${cpus[@]}"; do
   done
   [[ -d $stage/content-shell/resources ]] && mv "$stage/content-shell/resources" "$pkg/lib/"
   install -m 755 "$root/build/release/low-ram-browser" "$root/build/release/install.sh" "$pkg/"
-  install -m 644 "$root/LICENSE" "$pkg/"
+  install -m 644 "$root/LICENSE" "$root/build/release/low-ram-browser.svg" "$pkg/"
   chromium="$(cut -d' ' -f1 "$pkg/lib/CHROMIUM")"
   sed -e "s/@VERSION@/$version/" -e "s/@CHROMIUM@/$chromium/" -e "s/@CPU@/$cpu/" \
     "$root/build/release/README.txt" > "$pkg/README.txt"

@@ -2,6 +2,7 @@ name: low-ram-browser
 base: core24
 version: '0.1.0-alpha.8'
 title: Low RAM Browser
+icon: build/release/low-ram-browser.svg
 summary: Chromium-based browser with the smallest memory footprint
 description: |
   A Chromium-based web browser for machines where every kilobyte counts:

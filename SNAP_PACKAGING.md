@@ -154,9 +154,6 @@ have; until granted, users connect by hand.
 - **No shared certificate store.** `~/.pki/nssdb` is read only through the
   real home, which the snap's `$HOME` is not; client certificates and
   user-added authorities from Chrome or Firefox are not seen.
-- **Icon.** `snap/gui/low-ram-browser.svg` is a placeholder; the repository
-  has no icon of its own (Chromium's prebuilt `product_logo_48.png` is
-  Google's and must not be used).
 - **Memory for standard mode.** 3 GiB of RAM and 1.5 GiB free at start,
   besides the plug; a small LXD container exercises lean mode only.
 - **arm64** is cross-compiled and not yet run on a Pi.

@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/containers/span.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -45,11 +46,15 @@
 #include "lrb/browser/ui/file_picker.h"
 #include "lrb/browser/ui/javascript_dialogs.h"
 #include "lrb/browser/ui/window_view.h"
+#include "lrb/grit/lrb_resources.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/resource/resource_bundle.h"
+#include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
@@ -68,6 +73,20 @@ namespace lrb {
 namespace {
 
 LrbPlatformDelegate* g_delegate = nullptr;
+
+// lrb's icon, the windows' app icon (taskbars, Alt+Tab, beside the page's
+// icon). Decoded once per process (128x128 ARGB: 64 KB), shared by its
+// windows; the PNG stays in lrb.pak's mapping.
+ui::ImageModel AppIcon() {
+  static const base::NoDestructor<gfx::ImageSkia> icon(
+      gfx::Image::CreateFrom1xPNGBytes(
+          base::as_byte_span(
+              ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
+                  IDR_LRB_ICON_128)))
+          .AsImageSkia());
+  return icon->isNull() ? ui::ImageModel()
+                        : ui::ImageModel::FromImageSkia(*icon);
+}
 std::optional<gfx::Rect>& NextWindowBounds() {
   static std::optional<gfx::Rect> bounds;
   return bounds;
@@ -868,6 +887,7 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
   Window* raw = window.get();
   window->context = shell->web_contents()->GetBrowserContext();
   window->delegate = std::make_unique<views::WidgetDelegate>();
+  window->delegate->SetAppIcon(AppIcon());
   WindowView::TabActions actions;
   actions.select = base::BindRepeating(
       [](base::WeakPtr<LrbPlatformDelegate> self, Window* window,

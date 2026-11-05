@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- lrb's own resources, in lrb.pak. The ids take content_shell's range
+     (its shell_resources.grd, which lrb.pak leaves out): no entry in
+     Chromium's tools/gritsettings/resource_ids.spec to patch. -->
+<grit latest_public_release="0" current_release="1">
+  <outputs>
+    <output filename="grit/lrb_resources.h" type="rc_header">
+      <emit emit_type='prepend'></emit>
+    </output>
+    <output filename="lrb_resources.pak" type="data_package" />
+  </outputs>
+  <translations />
+  <release seq="1">
+    <includes first_id="8020">
+      <!-- The window's app icon (taskbars, Alt+Tab). X11 takes one size,
+           so only the 128 px render. -->
+      <include name="IDR_LRB_ICON_128" file="lrb_128.png" type="BINDATA" />
+    </includes>
+  </release>
+</grit>
