@@ -58,6 +58,17 @@ Check the manifest is in:
 unsquashfs -l low-ram-browser_*_amd64.snap | grep -q 'squashfs-root/snap/manifest.yaml$' && echo "manifest: present"
 ```
 
+Before packing a snap that will be given to anyone, run `snapcraft clean`.
+The build container keeps what earlier builds primed: a file removed from
+`snap/gui` stays in every later snap until then (the placeholder icon
+shipped beside the real one in the first alpha.8 snaps, where a desktop
+that still held the old menu entry found it). `meta/gui` should hold
+`icon.svg` and `low-ram-browser.desktop`, nothing else:
+
+```sh
+unsquashfs -l low-ram-browser_*_amd64.snap | grep 'squashfs-root/meta/gui/'
+```
+
 ## First test: devmode
 
 ```sh
