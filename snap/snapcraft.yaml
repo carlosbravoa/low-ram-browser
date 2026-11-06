@@ -135,8 +135,8 @@ parts:
       set -eu
       version="0.1.0-alpha.8"
       case "$CRAFT_ARCH_BUILD_FOR" in
-        amd64) cpu=x64;   sha=37efbe011e713cfa9bf5c67c007db8327c9338e720e37c0e89f81c4152bd9bcd ;;
-        arm64) cpu=arm64; sha=0608d1cf875f7d470f439f0769e4ad604f678960f58ffc6719591c1ceb0843a9 ;;
+        amd64) cpu=x64;   sha=56e7cc81770686da0233781599d16de5563e20c0d4e7f02e7f79891a3ce4c693 ;;
+        arm64) cpu=arm64; sha=11ca1f42e611a38fd7126ca37c057ad3b1c4043bd88d4111ba4cac05b55aac9e ;;
         *) echo "no lrb build for $CRAFT_ARCH_BUILD_FOR" >&2; exit 1 ;;
       esac
       tarball="low-ram-browser-$version-linux-$cpu.tar.zst"
