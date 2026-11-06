@@ -244,10 +244,12 @@ and without the GPU.
   to open on start, how much content blocking (full lists, lighter ones
   for less memory, or off; the menu also turns it off for one site),
   whether downloads ask where to save, and memory in window titles.
-- **About lrb** (in the menu): the version and the source it was built
-  from, the Chromium version under it and the day Chromium released it
-  (to compare with Chromium's latest release), a link to this repository,
-  and the licenses of every component.
+- **About Low RAM Browser** (in the menu): what it is, the version and
+  the source it was built from, the Chromium version under it and the day
+  Chromium released it (to compare with Chromium's latest release), the
+  mode and what it runs on (X11 or Wayland, the CPU, a snap or not), links
+  to this repository and to report a problem, the copyright, and the
+  licenses of every component.
 
 ## What it leaves out
 

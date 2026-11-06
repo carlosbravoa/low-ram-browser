@@ -47,10 +47,18 @@ class Widget;
 class WidgetDelegate;
 }  // namespace views
 
+namespace ui {
+class ImageModel;
+}  // namespace ui
+
 namespace lrb {
 
 class Shell;
 class WindowView;
+
+// lrb's icon (lrb.pak): the windows' app icon (taskbars, Alt+Tab, beside
+// the page's icon) and the one in About. Empty if the resource is missing.
+ui::ImageModel AppIcon();
 
 // lrb's windows: Views windows with lrb's slim bar (see window_view.h), and
 // tabs. Shell (a page) reports to it. Started from content_shell's
@@ -295,11 +303,13 @@ class LrbPlatformDelegate : public views::WidgetObserver {
   };
 
   // Where the next Shell goes: a new window, or a tab of `window` (in place
-  // `tab`, or a new one after the active tab).
+  // `tab`, or a new one: after the active tab, or last with `at_end`, which
+  // is where New tab's button is).
   struct Next {
     bool new_window = false;
     raw_ptr<Window> window = nullptr;
     std::optional<size_t> tab;
+    bool at_end = false;
   };
 
   Window* WindowOf(Shell* shell);

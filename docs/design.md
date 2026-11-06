@@ -129,8 +129,10 @@ sites 1083 MB against 741 MB lean, unreclaimable), minus the Chrome layer.
    the machine.
 9. **Window UI:** a slim native (Views) bar with back, forward, reload, a
    site chip in the site's colour with the path beside it (click to edit),
-   a blocked-request count and a menu; a second thin row for tabs with two
-   or more pages. Not HTML: 6.5 MB against about 2 MB per window.
+   a blocked-request count and a menu; with two or more pages, a tab
+   strip above it, the shown tab joined to the bar and marked with the
+   site's colour (`lrb/browser/ui/tab_strip.h`). Not HTML: 6.5 MB against
+   about 2 MB per window.
 10. **Permissions:** none without the user saying yes. Camera, microphone
     and clipboard reading are asked about in the window, remembered per
     site and revocable from the menu; everything else is refused. Popups

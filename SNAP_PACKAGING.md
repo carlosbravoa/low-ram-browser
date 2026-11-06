@@ -112,7 +112,7 @@ low-ram-browser https://en.wikipedia.org
 ```
 
 `--dangerous` installs an unsigned local snap with real confinement. Check
-the mode in the menu's "About lrb" or in the coordinator's first log line
+the mode in the menu's "About Low RAM Browser" or in the coordinator's first log line
 (`snap run low-ram-browser` prints it to the terminal): "standard mode" with
 the plug connected, "lean mode: ... can't create a user namespace" without.
 

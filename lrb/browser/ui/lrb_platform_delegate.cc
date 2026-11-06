@@ -70,13 +70,8 @@
 
 namespace lrb {
 
-namespace {
-
-LrbPlatformDelegate* g_delegate = nullptr;
-
-// lrb's icon, the windows' app icon (taskbars, Alt+Tab, beside the page's
-// icon). Decoded once per process (128x128 ARGB: 64 KB), shared by its
-// windows; the PNG stays in lrb.pak's mapping.
+// Decoded once per process (128x128 ARGB: 64 KB), shared by its windows;
+// the PNG stays in lrb.pak's mapping.
 ui::ImageModel AppIcon() {
   static const base::NoDestructor<gfx::ImageSkia> icon(
       gfx::Image::CreateFrom1xPNGBytes(
@@ -87,6 +82,11 @@ ui::ImageModel AppIcon() {
   return icon->isNull() ? ui::ImageModel()
                         : ui::ImageModel::FromImageSkia(*icon);
 }
+
+namespace {
+
+LrbPlatformDelegate* g_delegate = nullptr;
+
 std::optional<gfx::Rect>& NextWindowBounds() {
   static std::optional<gfx::Rect> bounds;
   return bounds;
@@ -856,7 +856,9 @@ void LrbPlatformDelegate::CreatePlatformWindow(Shell* shell,
       Tab tab;
       tab.shell = shell;
       tab.back_url = back;
-      const size_t index = std::min(target->active + 1, target->tabs.size());
+      const size_t index =
+          next.at_end ? target->tabs.size()
+                      : std::min(target->active + 1, target->tabs.size());
       target->tabs.insert(target->tabs.begin() + index, std::move(tab));
       if (target->active >= index) {
         ++target->active;
@@ -1123,6 +1125,7 @@ void LrbPlatformDelegate::NewTab(Window* window) {
   WindowView* view = ViewOf(window);
   next_ = Next();
   next_.window = window;
+  next_.at_end = true;
   Shell::CreateNewWindow(window->context, view->NewTabUrl(),
                                   nullptr, gfx::Size());
 }

@@ -18,5 +18,5 @@ Your data:  ~/.local/share/lrb (one profile per site)
 Settings:   ~/.config/lrb/settings.json (or the menu's Settings)
 
 lib/ holds the browser itself; you don't need to run anything in it.
-Version, source and licenses: the menu's "About lrb". Licenses: LICENSE
+Version, source and licenses: the menu's "About Low RAM Browser". Licenses: LICENSE
 (lrb's), lib/credits.html (every component's, Chromium's included).

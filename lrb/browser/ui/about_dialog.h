@@ -16,7 +16,9 @@ class View;
 
 namespace lrb {
 
-// The About window: lrb's version and the source it was built from, the
+// The About window ("About Low RAM Browser" in the menu): the icon, what
+// lrb is in a line, its version and the source it was built from, what it
+// runs on (for problem reports, with a link to the issues), the
 // Chromium version under it and the day Chromium released it to Stable (so
 // users can tell how current its security fixes are), where the source is,
 // and the copyrights and licenses (all components' in credits.html next to

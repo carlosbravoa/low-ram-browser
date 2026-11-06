@@ -47,6 +47,7 @@ class AddressField;
 class Shell;
 class ShortcutHandler;
 class SuggestionsPopup;
+class TabStrip;
 struct Suggestion;
 
 // A window's contents: lrb's slim bar above the page. One 36 px row: back,
@@ -63,7 +64,8 @@ struct Suggestion;
 // instance). F6 and Shift+F6 move the focus between the page, the address
 // and a question on screen.
 //
-// With 2+ tabs, a thin row of them under the bar. The bar shows the active
+// With 2+ tabs, a strip of them above the bar (tab_strip.h), the shown
+// tab joined to the bar. The bar shows the active
 // tab (its Shell); the delegate (LrbPlatformDelegate) owns the tabs and
 // tells which to show, and hides the whole window when the site is left in
 // lean mode. Shells own themselves and outlive their time here.
@@ -108,8 +110,8 @@ class WindowView : public views::View,
   // the next ShowTab().
   void PageClosed();
   Shell* shell() const { return shell_; }
-  // The tab row: titles and icons, and which tab is shown. Hidden with one
-  // tab.
+  // The tab strip: titles and icons, and which tab is shown. Hidden with
+  // one tab.
   struct TabLabel {
     std::u16string title;
     gfx::ImageSkia icon;  // the page's (favicon.h); empty: none
@@ -303,7 +305,7 @@ class WindowView : public views::View,
   void HideSuggestions();
   void NewPage();
   void CloseSoon();
-  // F11: the window fills the screen, without the bar and the tab row.
+  // F11: the window fills the screen, without the bar and the tab strip.
   void ToggleFullscreen();
 
   // views::View:
@@ -357,7 +359,7 @@ class WindowView : public views::View,
   // "Snap connections to make" (--lrb-snap-notice), until clicked.
   raw_ptr<views::LabelButton> snap_notice_ = nullptr;
   ui::SimpleMenuModel download_menu_model_{this};
-  raw_ptr<views::View> tab_row_ = nullptr;
+  raw_ptr<TabStrip> tab_strip_ = nullptr;
   raw_ptr<views::View> question_row_ = nullptr;
   raw_ptr<views::Label> question_label_ = nullptr;
   raw_ptr<views::Textfield> question_input_ = nullptr;

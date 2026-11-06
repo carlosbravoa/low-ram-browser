@@ -126,6 +126,8 @@ executable("lrb") {
     "browser/ui/snap_connections_dialog.h",
     "browser/ui/suggestions_popup.cc",
     "browser/ui/suggestions_popup.h",
+    "browser/ui/tab_strip.cc",
+    "browser/ui/tab_strip.h",
     "browser/ui/window_view.cc",
     "browser/ui/window_view.h",
     "common/content_blocker.cc",

@@ -47,6 +47,7 @@
 #include "lrb/browser/ui/settings_dialog.h"
 #include "lrb/browser/ui/snap_connections_dialog.h"
 #include "lrb/browser/ui/suggestions_popup.h"
+#include "lrb/browser/ui/tab_strip.h"
 #include "lrb/browser/zoom_levels.h"
 #include "lrb/common/content_blocker.h"
 #include "lrb/common/lrb_switches.h"
@@ -358,6 +359,12 @@ WindowView::WindowView(TabActions actions) : actions_(std::move(actions)) {
       views::BoxLayout::Orientation::kVertical));
   SetBackground(views::CreateSolidBackground(ui::kColorWindowBackground));
 
+  // Tabs: a strip above the bar, only with 2+ (SetTabs). The callbacks
+  // are the delegate's, kept in actions_ for the shortcuts too.
+  tab_strip_ = AddChildView(std::make_unique<TabStrip>(
+      actions_.select, actions_.close, actions_.new_tab));
+  tab_strip_->SetVisible(false);
+
   auto* bar = AddChildView(std::make_unique<views::View>());
   bar_ = bar;
   // --content-shell-hide-toolbar: no bar (kiosks, and measuring the bar).
@@ -504,14 +511,6 @@ WindowView::WindowView(TabActions actions) : actions_(std::move(actions)) {
                                             base::Unretained(this)),
                         kMenuIcon, kIconSize))
       ->SetTooltipText(u"Menu");
-
-  // Tabs: a thin row, only with 2+ (SetTabs).
-  tab_row_ = AddChildView(std::make_unique<views::View>());
-  tab_row_->SetLayoutManager(std::make_unique<views::FlexLayout>())
-      ->SetOrientation(views::LayoutOrientation::kHorizontal)
-      .SetCrossAxisAlignment(views::LayoutAlignment::kCenter)
-      .SetInteriorMargin(gfx::Insets::TLBR(0, 6, 2, 6));
-  tab_row_->SetVisible(false);
 
   AddChildView(std::make_unique<views::Separator>())->SetVisible(!hidden);
 
@@ -689,67 +688,18 @@ void WindowView::ClearPage() {
 }
 
 void WindowView::SetTabs(std::vector<TabLabel> tabs, size_t active) {
-  tab_row_->RemoveAllChildViews();
-  // Hidden in fullscreen (F11) too.
-  tab_row_->SetVisible(tabs.size() > 1 &&
-                       !(GetWidget() && GetWidget()->IsFullscreen()));
-  if (tabs.size() <= 1) {
-    InvalidateLayout();
-    return;
+  // One tab needs no strip. Hidden in fullscreen (F11) too.
+  tab_strip_->SetVisible(tabs.size() > 1 &&
+                         !(GetWidget() && GetWidget()->IsFullscreen()));
+  std::vector<TabStrip::Tab> strip_tabs;
+  strip_tabs.reserve(tabs.size());
+  for (TabLabel& label : tabs) {
+    TabStrip::Tab tab;
+    tab.title = std::move(label.title);
+    tab.icon = std::move(label.icon);
+    strip_tabs.push_back(std::move(tab));
   }
-  for (size_t i = 0; i < tabs.size(); ++i) {
-    auto* tab = tab_row_->AddChildView(std::make_unique<views::View>());
-    tab->SetLayoutManager(std::make_unique<views::FlexLayout>())
-        ->SetOrientation(views::LayoutOrientation::kHorizontal)
-        .SetCrossAxisAlignment(views::LayoutAlignment::kCenter);
-    if (i == active) {
-      tab->SetBackground(views::CreateRoundedRectBackground(
-          ui::kColorSubtleEmphasisBackground, 8));
-    }
-    tab->SetProperty(views::kMarginsKey, gfx::Insets::VH(2, 2));
-    tab->SetProperty(
-        views::kFlexBehaviorKey,
-        views::FlexSpecification(views::LayoutOrientation::kHorizontal,
-                                 views::MinimumFlexSizeRule::kScaleToMinimum,
-                                 views::MaximumFlexSizeRule::kPreferred));
-    // A click shows the tab; a middle-click closes it.
-    auto* title = tab->AddChildView(std::make_unique<views::LabelButton>(
-        base::BindRepeating(
-            [](const TabActions* actions, size_t index,
-               const ui::Event& event) {
-              if (event.IsMouseEvent() &&
-                  event.AsMouseEvent()->IsOnlyMiddleMouseButton()) {
-                actions->close.Run(index);
-              } else {
-                actions->select.Run(index);
-              }
-            },
-            base::Unretained(&actions_), i),
-        tabs[i].title));
-    if (!tabs[i].icon.isNull()) {
-      title->SetImageModel(views::Button::STATE_NORMAL,
-                           ui::ImageModel::FromImageSkia(tabs[i].icon));
-    }
-    title->SetTriggerableEventFlags(ui::EF_LEFT_MOUSE_BUTTON |
-                                    ui::EF_MIDDLE_MOUSE_BUTTON);
-    title->SetMaxSize(gfx::Size(200, 0));
-    title->SetElideBehavior(gfx::ELIDE_TAIL);
-    title->SetTooltipText(tabs[i].title);
-    title->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(3, 8)));
-    title->SetProperty(
-        views::kFlexBehaviorKey,
-        views::FlexSpecification(views::LayoutOrientation::kHorizontal,
-                                 views::MinimumFlexSizeRule::kScaleToMinimum,
-                                 views::MaximumFlexSizeRule::kPreferred));
-    tab->AddChildView(views::CreateVectorImageButtonWithNativeTheme(
-                          base::BindRepeating(actions_.close, i),
-                          vector_icons::kCloseSmallIcon, 14))
-        ->SetTooltipText(u"Close tab (Ctrl+W)");
-  }
-  tab_row_
-      ->AddChildView(views::CreateVectorImageButtonWithNativeTheme(
-          actions_.new_tab, vector_icons::kAddOldIcon, 14))
-      ->SetTooltipText(u"New tab (Ctrl+T)");
+  tab_strip_->SetTabs(std::move(strip_tabs), active);
   InvalidateLayout();
 }
 
@@ -773,6 +723,9 @@ void WindowView::SetUrl(const GURL& url) {
   }
   url_ = url;
   site_ = SiteForUrl(url);
+  // The line on the shown tab: the site's colour, as the chip.
+  tab_strip_->SetAccentColor(site_.empty() ? SK_ColorTRANSPARENT
+                                           : SiteColor(site_));
   chip_->SetVisible(!site_.empty());
   if (!site_.empty()) {
     chip_->SetText(base::UTF8ToUTF16(site_));
@@ -1795,14 +1748,16 @@ void WindowView::ShowMenuWith(std::vector<Suggestion> bookmarks) {
     menu_model_.AddItem(kSnapConnections, u"Snap connections...");
   }
   menu_model_.AddItem(kSettings, u"Settings...");
-  menu_model_.AddItem(kAbout, u"About lrb");
+  menu_model_.AddItem(kAbout, u"About Low RAM Browser");
   menu_model_.AddSeparator(ui::NORMAL_SEPARATOR);
   menu_model_.AddItem(kCloseSite, standard ? u"Close all windows"
                                            : u"Close all pages of this site");
 
   menu_runner_ = std::make_unique<views::MenuRunner>(
       &menu_model_, views::MenuRunner::HAS_MNEMONICS);
-  const gfx::Rect bounds = GetBoundsInScreen();
+  // Under the bar's right end (the bar is below the tab strip, when that
+  // shows).
+  const gfx::Rect bounds = bar_->GetBoundsInScreen();
   menu_runner_->RunMenuAt(
       GetWidget(), nullptr,
       gfx::Rect(bounds.right() - 4, bounds.y() + kBarHeight - 4, 0, 0),
@@ -1825,7 +1780,7 @@ void WindowView::ToggleFullscreen() {
   const bool fullscreen = !widget->IsFullscreen();
   widget->SetFullscreen(fullscreen);
   bar_->SetVisible(!fullscreen && !Shell::ShouldHideToolbar());
-  tab_row_->SetVisible(!fullscreen && tab_row_->children().size() > 1);
+  tab_strip_->SetVisible(!fullscreen && tab_strip_->tab_count() > 1);
   InvalidateLayout();
 }
 
