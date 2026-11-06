@@ -1,6 +1,6 @@
 name: low-ram-browser
 base: core24
-version: '0.1.0-alpha.8'
+version: '0.1.0-alpha.9'
 title: Low RAM Browser
 icon: build/release/low-ram-browser.svg
 summary: Chromium-based browser with the smallest memory footprint
@@ -133,10 +133,10 @@ parts:
         - libsecret-1-0
     override-build: |
       set -eu
-      version="0.1.0-alpha.8"
+      version="0.1.0-alpha.9"
       case "$CRAFT_ARCH_BUILD_FOR" in
-        amd64) cpu=x64;   sha=56e7cc81770686da0233781599d16de5563e20c0d4e7f02e7f79891a3ce4c693 ;;
-        arm64) cpu=arm64; sha=11ca1f42e611a38fd7126ca37c057ad3b1c4043bd88d4111ba4cac05b55aac9e ;;
+        amd64) cpu=x64;   sha=4d3cf7b1be7438478330f9161c42621724bcb79608e06b204556876ea5d40b9d ;;
+        arm64) cpu=arm64; sha=f8b3e8ba8cec17ac075f5c05409e1fc223daab6e6346864a2df5faea9e711317 ;;
         *) echo "no lrb build for $CRAFT_ARCH_BUILD_FOR" >&2; exit 1 ;;
       esac
       tarball="low-ram-browser-$version-linux-$cpu.tar.zst"
