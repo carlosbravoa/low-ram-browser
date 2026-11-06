@@ -4,6 +4,11 @@
 
 #include "lrb/app/lrb_main_delegate.h"
 
+#include <stdlib.h>
+
+#include <algorithm>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/base_paths.h"
@@ -11,6 +16,8 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/tag_converters.h"
 #include "base/logging.h"
 #include "base/logging/logging_settings.h"
 #include "base/path_service.h"
@@ -191,6 +198,30 @@ void InitializeResourceBundle() {
       pak_file.Append(FILE_PATH_LITERAL("lrb.pak")));
 }
 
+// The system's language as a tag: "es-CL" for LANG=es_CL.UTF-8. The first
+// of LC_ALL, LC_MESSAGES and LANG that is set decides, as it did for ICU
+// when ICU read them itself (until M156). Empty when none is set or it
+// says "C" or "POSIX".
+std::string SystemLanguage() {
+  for (const char* name : {"LC_ALL", "LC_MESSAGES", "LANG"}) {
+    const char* value = getenv(name);
+    if (!value || !*value) {
+      continue;
+    }
+    std::string tag(value);
+    // The encoding (".UTF-8") and the modifier ("@euro") go.
+    if (size_t end = tag.find_first_of(".@"); end != std::string::npos) {
+      tag.resize(end);
+    }
+    if (tag == "C" || tag == "POSIX") {
+      return std::string();
+    }
+    std::ranges::replace(tag, '_', '-');
+    return tag;
+  }
+  return std::string();
+}
+
 }  // namespace
 
 LrbMainDelegate::LrbMainDelegate() = default;
@@ -261,6 +292,18 @@ bool LrbMainDelegate::ShouldInitializeMojo(InvokedIn invoked_in) {
 }
 
 void LrbMainDelegate::PreSandboxStartup() {
+  // ICU's default locale: what pages get from Intl and toLocaleString()
+  // with no locale named, what fonts are picked by, and the first of
+  // navigator.languages and Accept-Language (GetAcceptLangs). Until M156
+  // ICU took it from the environment; since M157 Chromium starts it as
+  // en-US and the embedder sets it (patch 0005 lets this class). Here, as
+  // ICU is initialised by now, in every process that starts: the browser,
+  // the zygote (its children inherit it) and the others.
+  if (std::optional<base::i18n::LanguageTag> tag =
+          base::i18n::GetLanguageTagFromString(SystemLanguage())) {
+    base::i18n::SetDefaultIcuLocale(base::i18n::DefaultIcuLocaleSetterKey(),
+                                    *tag);
+  }
   InitializeResourceBundle();
 }
 

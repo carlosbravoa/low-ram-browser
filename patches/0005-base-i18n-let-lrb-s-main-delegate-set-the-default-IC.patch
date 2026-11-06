@@ -1,0 +1,48 @@
+From 3ebac34f266ee34a418d0c05325dc91bd1926bf1 Mon Sep 17 00:00:00 2001
+From: Carlos Bravo <cbravoa@gmail.com>
+Date: Thu, 5 Nov 2026 22:35:25 -0300
+Subject: [PATCH] base/i18n: let lrb's main delegate set the default ICU locale
+
+Since M157 ICU's default locale no longer comes from the environment:
+it starts as en-US (default_icu_locale.cc) and only the holders of
+DefaultIcuLocaleSetterKey may change it, each embedder's main delegate
+among them (Chrome's, WebView's, WebEngine's). An embedder outside that
+list keeps en-US whatever the system's language: pages get American
+dates and numbers from Intl with no locale named, and fonts are chosen
+for English.
+
+lrb::LrbMainDelegate joins the list. It sets the locale from LC_ALL,
+LC_MESSAGES or LANG once ICU is initialised.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018TWASYdNibByJVnC3NDKuk
+---
+ base/i18n/icubridge/default_icu_locale.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/base/i18n/icubridge/default_icu_locale.h b/base/i18n/icubridge/default_icu_locale.h
+index 0dfdca46cdb20..84718fe646a6e 100644
+--- a/base/i18n/icubridge/default_icu_locale.h
++++ b/base/i18n/icubridge/default_icu_locale.h
+@@ -55,6 +55,10 @@ COMPONENT_EXPORT(UI_BASE)
+ std::string GetApplicationLocale(std::string_view, bool);
+ }
+ 
++namespace lrb {
++class LrbMainDelegate;
++}
++
+ namespace base::i18n {
+ 
+ class ScopedDefaultIcuLocale;
+@@ -80,6 +84,7 @@ class BASE_I18N_EXPORT DefaultIcuLocaleSetterKey {
+   friend class ::ChromeMainDelegate;
+   friend int(::content::RendererMain)(::content::MainFunctionParams);
+   friend std::string(::l10n_util::GetApplicationLocale)(std::string_view, bool);
++  friend class ::lrb::LrbMainDelegate;
+ 
+   DefaultIcuLocaleSetterKey() = default;
+ };
+-- 
+2.53.0
+

@@ -118,12 +118,6 @@ class Shell : public content::WebContentsDelegate,
                               content::InvalidateTypes changed_flags) override;
   content::JavaScriptDialogManager* GetJavaScriptDialogManager(
       content::WebContents* source) override;
-  void FindReply(content::WebContents* web_contents,
-                 int request_id,
-                 int number_of_matches,
-                 const gfx::Rect& selection_rect,
-                 int active_match_ordinal,
-                 bool final_update) override;
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
@@ -162,6 +156,12 @@ class Shell : public content::WebContentsDelegate,
   // A window waiting for its page (a hand-off) goes on screen.
   void PrimaryMainDocumentElementAvailable() override;
   void DidFirstVisuallyNonEmptyPaint() override;
+  // Find-in-page counts (WebContentsDelegate::FindReply until M156).
+  void DidReceiveFindReply(int request_id,
+                           int number_of_matches,
+                           const gfx::Rect& selection_rect,
+                           int active_match_ordinal,
+                           bool final_update) override;
 
   std::unique_ptr<content::JavaScriptDialogManager> dialog_manager_;
   std::unique_ptr<content::WebContents> web_contents_;

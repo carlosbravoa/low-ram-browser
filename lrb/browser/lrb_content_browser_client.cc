@@ -612,8 +612,15 @@ LrbContentBrowserClient::CreateLoginDelegate(
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     content::GuestPageHolder* guest,
     content::LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
+  // Requests that must not show a sign-in question (some proxy challenges,
+  // since M157): lrb has no credentials but the ones the user types, so the
+  // challenge is cancelled.
+  if (do_not_prompt_for_login) {
+    return nullptr;
+  }
   return AskToSignIn(auth_info, web_contents,
                      is_request_for_primary_main_frame_navigation, url,
                      std::move(auth_required_callback));
@@ -688,7 +695,8 @@ bool LrbContentBrowserClient::IsHandledURL(const GURL& url) {
 std::string LrbContentBrowserClient::GetAcceptLangs(
     content::BrowserContext* context) {
   // The system's language (LANG, LC_ALL...), then English: "es-CL,es,en-US,en".
-  // content_shell always sent "en-us,en".
+  // content_shell always sent "en-us,en". ICU's default locale is the
+  // system's because LrbMainDelegate::PreSandboxStartup sets it.
   static const base::NoDestructor<std::string> langs([] {
     std::vector<std::string> list;
     auto add = [&list](const std::string& lang) {

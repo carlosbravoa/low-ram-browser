@@ -40,11 +40,14 @@ use_gtk = false
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 
-# Build-time only. V8's metagen step runs `gn desc` over the whole tree,
-# where //chrome targets assert the features dropped above, so it fails;
-# false selects V8's older path for the same generated code. M154 had no
-# metagen step; M155 has it again, under this name (main around M157
-# called it v8_use_metagen). GN warns "no effect" when it's gone.
-v8_use_metagen_instance_types = false
+# Build-time only. V8's metagen step runs its own `gn desc` in a temporary
+# directory, without this build's --root-target, so it loads the whole
+# tree, where //chrome targets assert the features dropped above, and
+# fails; false selects V8's older path for the same generated code. The
+# switch's name moves: none in M154, v8_use_metagen_instance_types in M155
+# and M156, v8_use_metagen since M157 (v8/gni/v8.gni). GN only warns "no
+# effect" for a name it doesn't know, and the build then fails at
+# //v8:run_metagen with `assert(enable_print_preview)`.
+v8_use_metagen = false
 
 # Keep: V8 sandbox (default on 64-bit), WebAssembly, dav1d (AV1 on YouTube).

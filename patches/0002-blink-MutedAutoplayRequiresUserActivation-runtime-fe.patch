@@ -1,4 +1,4 @@
-From 695fd88b18c77690346debc7242ab37b60e4da2a Mon Sep 17 00:00:00 2001
+From bb83aa3e264df8e69cc4874504e5cb53a1e91609 Mon Sep 17 00:00:00 2001
 From: Carlos Bravo <cbravoa@gmail.com>
 Date: Sun, 4 Oct 2026 16:31:10 -0300
 Subject: [PATCH] blink: MutedAutoplayRequiresUserActivation runtime feature
@@ -18,7 +18,7 @@ NotAllowedError from play() and show their play button.
  2 files changed, 10 insertions(+)
 
 diff --git a/third_party/blink/renderer/core/html/media/autoplay_policy.cc b/third_party/blink/renderer/core/html/media/autoplay_policy.cc
-index 6a713a6dfe..7bae1d55ae 100644
+index 6a713a6dfee0a..7bae1d55ae87f 100644
 --- a/third_party/blink/renderer/core/html/media/autoplay_policy.cc
 +++ b/third_party/blink/renderer/core/html/media/autoplay_policy.cc
 @@ -144,6 +144,9 @@ bool AutoplayPolicy::DocumentHasUserExceptionFlag(const Document& document) {
@@ -32,10 +32,10 @@ index 6a713a6dfe..7bae1d55ae 100644
           AutoplayPolicy::Type::kNoUserGestureRequired;
  }
 diff --git a/third_party/blink/renderer/platform/runtime_enabled_features.json5 b/third_party/blink/renderer/platform/runtime_enabled_features.json5
-index 2292d62615..9a8a855abf 100644
+index 812e9639a2146..d05c5889481de 100644
 --- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
 +++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
-@@ -4423,6 +4423,13 @@
+@@ -4493,6 +4493,13 @@
        name: "MoveParagraphsPreserveInlineStructure",
        status: "stable",
      },
@@ -47,8 +47,8 @@ index 2292d62615..9a8a855abf 100644
 +      name: "MutedAutoplayRequiresUserActivation",
 +    },
      {
-       name: "NavigateEventDeferCrossDocumentCommit",
-       status: "experimental",
+       // Support Nastaliq script. crbug.com/569667449
+       name: "NastaliqScript",
 -- 
 2.53.0
 
